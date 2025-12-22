@@ -55,4 +55,88 @@ ubuntu@ip-172-31-0-157:~$ cat /proc/loadavg
 
 예상대로 `uptime`에서 본 값들이 기록되어 있다. 그럼 이 값은 어떻게 만들어지는 걸까? 이제 커널 코드를 살펴볼 차례다.
 
-/proc 파일 시스템과 관련된 커널 소스는 fs/proc/에 위치해 있다. 그중 loadavg 파일과 관련된 파일은 fs/proc/loadavg.c 파일이다. 이 파일을 보면 `loadavg_proc_show()` 함수를 볼 수 있다.
+여기서 중요한 두 가지 사실을 알 수 있는데, `active` 변수와 `calc_load()` 함수이다. 먼저 `active` 변수의 값을 살펴보자. `active` 변수의 값에 대해 알기 위해서는 `calc_load_tasks`가 어떤 값을 가지게 되는지 살펴봐야 한다.
+
+1. `nr_active` 변수에 Run Queue를 기준으로 nr_running 상태의 프로세스 개수를 입력한다. 이 프로세스들이 바로 R 상태의 프로세스다.
+2. `nr_active` 변수에 Run Queue를 기준으로 nr_uninterruptible 상태의 프로세스 개수를 더해준다. 이 프로세스들이 바로 D 상태의 프로세스다.
+3. `nr_active` 값이 기존에 계산된 값과 다르다면 그 차이 값을 구한 후 `calc_load_tasks` 변수에 입력한다.
+
+이렇게 `cpu_load_account_active()` 함수가 매번 Tick 주기마다 깨어나서 현재 CPU의 Run Queue에 있는 nr_running 프로세스의 개수와 nr_uninterruptible 프로세스의 개수를 세어서 `calc_load_tasks` 변수에 넣어준다.
+
+[](https://blog.naver.com/sigsaly/220555533989)
+
+그 후 5초 간격으로 `calc_global_load()` 함수가 `calc_load_tasks` 변수 값을 바탕으로 1분, 5분, 15분 마다의 평균 Load Average를 계산해서 넣어준다.
+
+그림 3-2를 보면 커널 타이머가 두 함수를 주기적으로 호출한다. 먼저 `calc_load_account_active()`가 더 잦은 빈도로 호출되며 그때마다 `calc_load_tasks`의 변수를 갱신한다. 그 후 `calc_global_load()` 함수가 호출되어 내부적으로 active 변수에 `calc_load_tasks`의 값을 저장하고 `calc_load()` 함수를 통해서 최종적으로 계산된 값을 `avenrun[]` 배열에 저장한다. 과정이 조금 복잡해 보일 수 있지만, 결국 프로세스의 개수를 센다는 점만 기억하면 된다.
+
+# 3.3 CPU Bound vs I/O Bound
+
+지금까지 Load Average가 계산되는 과정을 살펴봤다. 결국 Load Average는 상대적인 값이 아니고 계산하는 순간을 기준으로 존재하는 nr_running 상태의 프로세스 개수와 nr_uninterruptible 상태의 프로세스 개수를 합한 값을 바탕으로 계산되는 것이었다.
+
+Load Average가 높다는 것은 단순히 CPU를 사용하려는 프로세스가 많다는 것을 의미하는 것이 아니고, I/O에 병목이 생겨서 I/O 작업을 대기하는 프로세스가 많을 수도 있다는 의미이다. Load Average 값만으로는 시스템에 어떤 상태의 부하가 일어나는지 확인하기 어렵다는 뜻이기도 하다.
+
+부하를 일으키는 프로세스는 크게 두 가지 종류로 나눌 수 있다. nr_running으로 표현되는, **CPU 자원을 많이 필요로 하는 CPU Bound 프로세스**와 nr_uninterruptible로 표현되는, **많은 I/O 자원을 필요로 하는 I/O Bound 프로세스**이다.
+
+첫번째는 무한루프를 돌면서 수치 연산을 하는 파이썬 스크립트이다. 이 스크립트를 실행시켜서 `uptime` 명령을 통해서 확인해보면 Load Average가 올라가는 것을 확인할 수 있다.
+
+```c
+ubuntu@ip-172-31-0-157:~$ uptime
+ 14:50:37 up 30 min,  2 users,  load average: 0.30, 0.07, 0.02
+ubuntu@ip-172-31-0-157:~$ uptime
+ 14:50:38 up 30 min,  2 users,  load average: 0.36, 0.08, 0.03
+ubuntu@ip-172-31-0-157:~$ uptime
+ 14:50:39 up 30 min,  2 users,  load average: 0.36, 0.08, 0.03
+ubuntu@ip-172-31-0-157:~$ uptime
+ 14:50:40 up 30 min,  2 users,  load average: 0.36, 0.08, 0.03
+ubuntu@ip-172-31-0-157:~$ uptime
+ 14:50:41 up 30 min,  2 users,  load average: 0.36, 0.08, 0.03
+ubuntu@ip-172-31-0-157:~$ uptime
+ 14:50:42 up 30 min,  2 users,  load average: 0.36, 0.08, 0.03
+ubuntu@ip-172-31-0-157:~$ uptime
+ 14:50:43 up 31 min,  2 users,  load average: 0.36, 0.08, 0.03
+ubuntu@ip-172-31-0-157:~$ uptime
+ 14:50:43 up 31 min,  2 users,  load average: 0.41, 0.10, 0.03
+ubuntu@ip-172-31-0-157:~$ uptime
+ 14:50:44 up 31 min,  2 users,  load average: 0.41, 0.10, 0.03
+ubuntu@ip-172-31-0-157:~$ uptime
+ 14:50:45 up 31 min,  2 users,  load average: 0.41, 0.10, 0.03
+ubuntu@ip-172-31-0-157:~$ uptime
+ 14:50:46 up 31 min,  2 users,  load average: 0.41, 0.10, 0.03
+ubuntu@ip-172-31-0-157:~$ uptime
+ 14:50:46 up 31 min,  2 users,  load average: 0.41, 0.10, 0.03
+ubuntu@ip-172-31-0-157:~$ uptime
+ 14:50:47 up 31 min,  2 users,  load average: 0.41, 0.10, 0.03
+ubuntu@ip-172-31-0-157:~$ uptime
+ 14:50:47 up 31 min,  2 users,  load average: 0.41, 0.10, 0.03
+ubuntu@ip-172-31-0-157:~$ uptime
+ 14:50:47 up 31 min,  2 users,  load average: 0.41, 0.10, 0.03
+ubuntu@ip-172-31-0-157:~$ uptime
+ 14:50:48 up 31 min,  2 users,  load average: 0.41, 0.10, 0.03
+ubuntu@ip-172-31-0-157:~$ uptime
+ 14:50:48 up 31 min,  2 users,  load average: 0.46, 0.11, 0.04
+```
+
+이번에는 무한루프를 돌면서 I/O를 발생시키는 파이썬 스크립트를 실행시켜 보자. 이 스크립트를 실행시키면 첫번째 예제와 마찬가지로 Load Average가 올라가는 것을 확인할 수 있다.
+
+```c
+ubuntu@ip-172-31-0-157:~$ uptime
+ 14:53:27 up 33 min,  2 users,  load average: 0.20, 0.11, 0.04
+ubuntu@ip-172-31-0-157:~$ uptime
+ 14:53:28 up 33 min,  2 users,  load average: 0.20, 0.11, 0.04
+ubuntu@ip-172-31-0-157:~$ uptime
+ 14:53:28 up 33 min,  2 users,  load average: 0.26, 0.12, 0.04
+ubuntu@ip-172-31-0-157:~$ uptime
+ 14:53:29 up 33 min,  2 users,  load average: 0.26, 0.12, 0.04
+ubuntu@ip-172-31-0-157:~$ uptime
+ 14:53:30 up 33 min,  2 users,  load average: 0.26, 0.12, 0.04
+ubuntu@ip-172-31-0-157:~$ uptime
+ 14:53:31 up 33 min,  2 users,  load average: 0.26, 0.12, 0.04
+ubuntu@ip-172-31-0-157:~$ uptime
+ 14:53:32 up 33 min,  2 users,  load average: 0.26, 0.12, 0.04
+ubuntu@ip-172-31-0-157:~$ uptime
+ 14:53:35 up 33 min,  2 users,  load average: 0.32, 0.14, 0.05
+ubuntu@ip-172-31-0-157:~$ uptime
+ 14:53:37 up 33 min,  2 users,  load average: 0.32, 0.14, 0.05
+ubuntu@ip-172-31-0-157:~$ uptime
+ 14:53:41 up 33 min,  2 users,  load average: 0.38, 0.15, 0.06
+```
