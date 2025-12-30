@@ -45,4 +45,67 @@ super block, inode block처럼 파일의 내용이 아닌 파일 시스템을 �
 
 **정리하자면 Page Cache는 파일의 내용을 저장하고 있는 캐시, Buffer Cache는 파일 시스템의 메타 데이터를 담고 있는 블록을 저장하고 있는 캐시라고 할 수 있다. 그리고 각각이 `free` 에서 표현하고 있는 cached, buffers 영역이다.**
 
-그렇다면 `free` 명령은 왜 이 두 영역을 제외한 영역을 가용한 영역으로 계산해서 다시 보여주는걸까?
+그렇다면 `free` 명령은 왜 이 두 영역을 제외한 영역을 가용한 영역으로 계산해서 다시 보여주는걸까? 서버의 운영 기간이 그리 길지 않을 때는 아마도 1번과 같은 메모리 사용 현황을 볼 수 있을 것이다. 아무 곳에서도 사용하지 않는 가용 영역에 있는 `free` 메모리와 애플리케이션에서 사용하고 있는 영역으로 나뉜다. 하지만 시간이 조금 지나면 **커널은 가용 영역 중 일부를 Cache 영역으로 사용하게 된다.** 그리고 시간이 흐를수록 애플리케이션에서 사용하게 되는 영역이 점점 넓어진다. 어느 순간까지는 가용 영역의 메모리를 가져다가 사용하게 될 것이다. Cache 영역이 충분히 있어야 I/O 성능 향상의 효과를 받을 수 있기 때문이다. **하지만 사용 영역이 점점 더 커져서 일정 수준 이상이 되면 커널은 Cache 영역으로 사용하던 영역을 애플리케이션이 사용할 수 있도록 메모리 관리 시스템에 반환한다.** Cache 영역이 줄고 애플리케이션의 사용 영역이 늘어난다. 이런 과정을 거치다 보면 더 이상 반환할 메모리도 없고 가용할 메모리가 없는 순간이 발생하게 되는데, **시스템은 이때부터 swap이라는 영역을 사용하게 되고 시스템의 성능이 줄어든다.**
+
+이처럼 buffers와 cached 영역은 시스템의 I/O 성능 향상을 위해서 커널이 사용하는 영역이다. **메모리가 부족한 상황이 되면 커널은 해당 영역을 자동으로 반환하기 때문에 `free` 명령에서도 해당 영역을 제외한 영역을 실제 사용 가능한 영역으로 계산하게 된다.**
+
+# 4.3 /proc/meminfo 읽기
+
+리눅스에서는 /proc/meminfo를 통해서 자세한 메모리 현황을 볼 수 있는 방법을 제공하고 있다. 출력 값은 커널 버전에 따라 조금씩 다르다.
+
+```c
+MemTotal:         980304 kB
+MemFree:          448008 kB
+MemAvailable:     646300 kB
+Buffers:           18840 kB
+Cached:           320984 kB
+SwapCached:            0 kB
+Active:           322752 kB
+Inactive:          82480 kB
+Active(anon):      88016 kB
+Inactive(anon):        0 kB
+Active(file):     234736 kB
+Inactive(file):    82480 kB
+Unevictable:       40228 kB
+Mlocked:           27264 kB
+SwapTotal:             0 kB
+SwapFree:              0 kB
+Zswap:                 0 kB
+Zswapped:              0 kB
+Dirty:              5232 kB
+Writeback:             0 kB
+AnonPages:        105704 kB
+Mapped:            96516 kB
+Shmem:               880 kB
+KReclaimable:      17708 kB
+Slab:              60068 kB
+SReclaimable:      17708 kB
+SUnreclaim:        42360 kB
+KernelStack:        2556 kB
+PageTables:         3296 kB
+SecPageTables:         0 kB
+NFS_Unstable:          0 kB
+Bounce:                0 kB
+WritebackTmp:          0 kB
+CommitLimit:      490152 kB
+Committed_AS:     489496 kB
+VmallocTotal:   34359738367 kB
+VmallocUsed:        9120 kB
+VmallocChunk:          0 kB
+Percpu:             8128 kB
+HardwareCorrupted:     0 kB
+AnonHugePages:         0 kB
+ShmemHugePages:        0 kB
+```
+
+- SwapCached: swap으로 빠진 메모리 영역 중 다시 메모리로 돌아온 영역을 의미한다. 메모리가 확보되어 다시 메모리로 돌아가지만, swap 영역에서 지우지는 않는다. 시스템에 메모리가 부족하면 커널은 프로세스의 주소 공간 중 swap 영역으로 이동시킬 수 있는 메모리를 선택해서 swap 영역으로 이동시킨다. 이 과정에서 I/O가 일어나기 때문에 성능 저하가 발생한다. 그 후 메모리가 다시 확보되어 swap 영역으로 빠졌던 영역이 다시 메모리로 돌아가게 되더라도 커널은 swap 영역에서 해당 메모리 내용을 삭제하지 않는다. 이후에 또다시 메모리 부족 현상이 일어날 경우를 대비하는 것이다. 해당 메모리 영역이 다시 swap 영역으로 내려와야 하는 일이 생긴다면 swap 영역으로 다시 복사하는 것이 아니라 이전에 참고한 메모리 영역을 삭제하지 않고 그대로 다시 활용한다. 이를 통해서 swap이 발생하더라도 조금이나마 I/O를 줄일 수 있다.
+    
+    [Swap 영역에 대해 (Swap 메모리)](https://tech-linux.tistory.com/11)
+    
+- Active(anon): anon은 anonymous의 줄임말이다. Anonymous가 익명이라는 뜻이 있어 오해의 소지가 있지만, 여기서는 **특정 파일의 내용을 저장하고 있는 Page Cache 영역을 제외한 메모리 영역을 의미**한다. 주로 **프로세스들이 사용하는 메모리 영역을 지칭할 때 많이 사용된다.** 그중에서도 비교적 최근에 메모리 영역이 참조되어 swap 영역으로 이동되지 않을 메모리 영역을 의미한다.
+- Inactive(anon): Active와 같은 영역을 의미하지만, 비교적 참조된지 오래되어 swap 영역으로 이동될 수 있는 메모리 영역을 의미한다.
+- Active(file): anon과는 다르게 file로 되어있는 이 영역은 커널이 I/O 성능 향상을 위해 사용하는 영역을 의미한다. 4.2에서 살펴보면 buffers와 cached 영역이 여기에 속한다. Active라는 이름에서 알 수 있듯이 비교적 최근까지 메모리 영역이 참조외어 Swap 영역으로 이동되지 않을 메모리 영역이다.
+- Inactive(file): Active(file)과 마찬가지로 I/O 성능 향상을 위해 커널이 캐시 목적으로 사용하고 있는 영역이다. Inactive라는 단어에서 알 수 있듯이 비교적 참조된 지 오래되어 swap 영역으로 이동될 수 있는 메모리 영역이다.
+- Dirty: I/O 성능 향상을 위해 커널이 캐시 목적으로 사용하는 영역 중 쓰기 작업이 이루어져서 실제 블록 디바이스의 블록에 씌어져야 할 영역을 의미한다. **커널은 기본적으로 I/O 쓰기 요청이 발생했을 때 바로 블록 디바이스로 명령을 내리지 않고 일정량이 될 때까지 모았다가 한 번에 쓰는 일종의 지연 쓰기 작업을 한다.** Dirty 메모리는 이 과정에서 사용되는 메모리 영역이다.
+    
+    [dirty page가 I/O에 미치는 영향](https://byungwoo.oopy.io/5188bc65-5b75-4538-a4c1-4826ea2e551c)
