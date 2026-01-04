@@ -109,3 +109,97 @@ ShmemHugePages:        0 kB
 - Dirty: I/O 성능 향상을 위해 커널이 캐시 목적으로 사용하는 영역 중 쓰기 작업이 이루어져서 실제 블록 디바이스의 블록에 씌어져야 할 영역을 의미한다. **커널은 기본적으로 I/O 쓰기 요청이 발생했을 때 바로 블록 디바이스로 명령을 내리지 않고 일정량이 될 때까지 모았다가 한 번에 쓰는 일종의 지연 쓰기 작업을 한다.** Dirty 메모리는 이 과정에서 사용되는 메모리 영역이다.
     
     [dirty page가 I/O에 미치는 영향](https://byungwoo.oopy.io/5188bc65-5b75-4538-a4c1-4826ea2e551c)
+
+/proc/meminfo 에서 확인할 수 있는 몇가지 정보들을 살펴봤는데, 아직 풀리지 않는 궁금증이 있다. 바로 Active 영역과 Inactive 영역을 구분하는 방법이다.두 영역은 어떤 기준으로 구분될까?
+
+커널이 직접 사용하는 메모리 영역을 제외하고 대부분의 메모리는 프로세스가 사용하거나 4.2에서 언급한 캐시 영역으로 사용한다. 위 결과를 보면, 이 메모리들이 각각 anon과 file을 의미한다.
+
+그림을 보면, anon, file 영역의 메모리는 LRU 기반의 리스트로 관리되고, 이 리스트는 다시 Active, Inactive두 개의 리스트로 나뉜다. anon 영역과 file 영역은 방식은 조금 다르지만 결과적으로는 **자주 사용되는 메모리 영역이 Active 리스트에 남게 된다.** 가장 최근에 참조한 메모리가 Active List에, 그리고 참조 시기가 오래될수록 Inactive 영역으로 이동하고 이후 free 영역으로 이동한다.
+
+그렇다면 Active 리스트와 Inactive 리스트 사이의 이동은 어떻게 결정될까? 기본적으로 프로세스가 메모리 할당을 요청하면 해당 메모리의 페이지가 Active 리스트에 연결된다. 그 후 메모리 할당이 실패하거나 메모리가 부족하게 되면 `kswapd` 혹은 커널 내부에서 `try_to_free_pages()` 함수를 통해서 LRU 리스트에 있는 메모리들을 확인한다.
+
+[/proc/meminfo의 Active와 Inactive, 그리고 kswapd](https://lots-of-knowledge.tistory.com/12)
+
+이 과정에서 Active 리스트에 있던 페이지가 해제되어 다른 프로세스에게 할당되는 작업이 이루어진다.
+
+2장에서 사용한 `malloc()` 함수 테스트용 코드를 살짝 바꿔서 간단하게 테스트해보자.
+
+```bash
+buntu@ip-172-31-0-131:~$ cat /proc/meminfo | grep -i anon
+Active(anon):      34716 kB
+Inactive(anon):    59212 kB
+AnonPages:        111572 kB
+AnonHugePages:         0 kB
+ubuntu@ip-172-31-0-131:~$ cat /proc/meminfo | grep -i anon
+Active(anon):      35724 kB
+Inactive(anon):    59212 kB
+AnonPages:        112620 kB
+AnonHugePages:         0 kB
+ubuntu@ip-172-31-0-131:~$ cat /proc/meminfo | grep -i anon
+Active(anon):      36772 kB
+Inactive(anon):    59212 kB
+AnonPages:        113668 kB
+AnonHugePages:         0 kB
+ubuntu@ip-172-31-0-131:~$ cat /proc/meminfo | grep -i anon
+Active(anon):      38828 kB
+Inactive(anon):    59212 kB
+AnonPages:        115720 kB
+AnonHugePages:         0 kB
+ubuntu@ip-172-31-0-131:~$ cat /proc/meminfo | grep -i anon
+Active(anon):      39916 kB
+Inactive(anon):    59212 kB
+AnonPages:        116848 kB
+AnonHugePages:         0 kB
+ubuntu@ip-172-31-0-131:~$ cat /proc/meminfo | grep -i anon
+Active(anon):      41072 kB
+Inactive(anon):    59212 kB
+AnonPages:        117892 kB
+AnonHugePages:         0 kB
+ubuntu@ip-172-31-0-131:~$ cat /proc/meminfo | grep -i anon
+Active(anon):      42068 kB
+Inactive(anon):    59212 kB
+AnonPages:        118940 kB
+AnonHugePages:         0 kB
+ubuntu@ip-172-31-0-131:~$ cat /proc/meminfo | grep -i anon
+Active(anon):      42060 kB
+Inactive(anon):    59212 kB
+AnonPages:        118956 kB
+AnonHugePages:         0 kB
+ubuntu@ip-172-31-0-131:~$ cat /proc/meminfo | grep -i anon
+Active(anon):      42084 kB
+Inactive(anon):    59212 kB
+AnonPages:        118940 kB
+AnonHugePages:         0 kB
+```
+
+위 결과를 보면 Active(anon) 메모리 영역이 계속해서 증가하는 것을 볼 수 있다. 그리고 10번의 할당이 끝난 후에 sleep 함수를 통해 아무것도 하지 않아도 메모리 영역은 계속 Active 영역이 남아있다. 단순히 시간이 지난다고 해서 Active 메모리가 Inactive로 이동하지 않는다는 것을 확인할 수 있다.
+
+그럼 Active에 있는 페이지는 언제 Inactive로 이동할까? 위에서도 언급했지만 **메모리 부족 현상이 발생해서 해제해야 할 메모리를 찾아야 하는 순간이 와야 커널은 비로소 LRU 리스트를 살펴보게 된다.** 그럼 kswapd를 강제로 실행시켜보자. 커널 파라미터 중에는 `vm.min_free_kbytes` 라는 파라미터가 있다. 해당 파라미터는 이름에서 알 수 있는 것처럼 **시스템에서 유지해야 하는 최소한의 free 메모리 양이다.** 이 값을 조금 높게 설정해보자.
+
+```bash
+root@ip-172-31-0-131:/home/ubuntu# sysctl -w vm.min_free_kbytes=6553500
+vm.min_free_kbytes = 6553500
+```
+
+그리고 나서 top을 통해 살펴보면 kswapd가 실행되는 것을 확인할 수 있다.
+
+```bash
+ubuntu@ip-172-31-0-131:~$ top -b -n 1 | grep kswapd
+     46 root      20   0       0      0      0 S   0.0   0.0   0:00.00 kswapd0
+```
+
+kswapd 데몬이 열심히 일을 하면서 Active 영역에 있는 페이지 중 오래된 페이지를 우선적으로 Inactive로 옮긴 후 메모리를 해제하는 작업을 진행하고 있다.
+
+```bash
+ubuntu@ip-172-31-0-131:~$ cat /proc/meminfo | grep -i anon
+Active(anon):      87812 kB
+Inactive(anon):        0 kB
+AnonPages:        105516 kB
+AnonHugePages:         0 kB
+```
+
+거의 12MB에 달하던 active(anon) 영역이 348kb 수준으로 내려갔고 (나는 안 내려가네….^^) free 영역이 `vm.min_free_kbytes`에 설정한 값 이상으로 올라간 것을 볼 수 있다. `vm.min_free_kbytes` 값을 원래대로 설정하면 kswapd가 더는 실행되지 않는다. 그리고 해당하는 메모리들이 대부분 Swap 영역으로 빠진다. 그래서 위의 kswapd 데몬 상태가 D 상태로 보인다.
+
+# 4.4 slab 메모리 영역
+
+지금까지 우리는 buffers, cached라고 부르는 캐싱 영역과 anon이라고 부르는 프로세스의 메모리 영역을 살펴봤다. 커널 역시 프로세스의 일종이기 때문에 메모리를 필요로하며, 조금 특별한 방법으로 메모리를 할당 받아서 사용한다. 그리고 우리가 앞 절에서 본 /proc/meminfo의 내용 중 아직 언급하지 않은, Slab 으로 표시되는 영역이 바로 커널이 사용하는 영역이다.
