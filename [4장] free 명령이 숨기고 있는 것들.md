@@ -203,3 +203,72 @@ AnonHugePages:         0 kB
 # 4.4 slab 메모리 영역
 
 지금까지 우리는 buffers, cached라고 부르는 캐싱 영역과 anon이라고 부르는 프로세스의 메모리 영역을 살펴봤다. 커널 역시 프로세스의 일종이기 때문에 메모리를 필요로하며, 조금 특별한 방법으로 메모리를 할당 받아서 사용한다. 그리고 우리가 앞 절에서 본 /proc/meminfo의 내용 중 아직 언급하지 않은, Slab 으로 표시되는 영역이 바로 커널이 사용하는 영역이다.
+
+```bash
+Slab:             117244 kB
+SReclaimable:      68440 kB
+SUnreclaim:        48804 kB
+```
+
+- Slab: 메모리 영역 중 커널이 직접 사용하는 영역을 Slab 영역이라고 한다. 이 영역에는 dentry cache, inode cache 등 커널이 사용하는 메모리가 포함된다.
+- SReclaimable: Slab 영역 중 재사용될 수 있는 영역이다. 캐시 용도로 사용하는 메모리들이 주로 여기에 포함된다. 메모리 부족 현상이 일어나면 해제되어 프로세스에 할당될 수 있는 영역이다.
+- SUnreclaim: Slab 영역 중 재시용될 수 없는 영역이다. 커널이 현재 사용중인 영역이며, 해제해서 다른 용도로 사용할 수 없다.
+
+리눅스에서는 `slabtop` 명령을 통해 현재 시스템에서 사용 중인 Slab의 정보를 살펴볼 수 있다.
+
+```bash
+root@ip-172-31-0-131:/home/ubuntu# slabtop -o
+ Active / Total Objects (% used)    : 315488 / 385253 (81.9%)
+ Active / Total Slabs (% used)      : 10449 / 10449 (100.0%)
+ Active / Total Caches (% used)     : 320 / 402 (79.6%)
+ Active / Total Size (% used)       : 83092.90K / 102662.52K (80.9%)
+ Minimum / Average / Maximum Object : 0.01K / 0.27K / 10.38K
+
+  OBJS ACTIVE  USE OBJ SIZE  SLABS OBJ/SLAB CACHE SIZE NAME                   
+ 49560  35865  72%    0.09K   1180       42      4720K trace_event_file       
+ 45357  45357 100%    0.10K   1163       39      4652K buffer_head            
+ 39270  32980  83%    0.19K   1870       21      7480K dentry                 
+ 35700  13478  37%    0.04K    350      102      1400K extent_status          
+ 35280  22544  63%    1.14K   1260       28     40320K ext4_inode_cache       
+ 31980  31980 100%    0.13K   1066       30      4264K kernfs_node_cache      
+ 19328   8028  41%    0.06K    302       64      1208K dmaengine-unmap-2      
+ 12656  12656 100%    0.57K    452       28      7232K radix_tree_node        
+  7728   7728 100%    0.07K    138       56       552K vmap_area              
+  6550   6534  99%    0.62K    262       25      4192K inode_cache        
+```
+
+모든 프로세스는 작업을 하기 위해 메모리가 필요하고 이는 커널도 예외가 아니다. I/O 작업을 조금이라도 더 빠르게 하기 위해 inode cache, dentry cache 등을 사용하거나 네트워크 소켓을 위한 메모리 영역을 확보하거나 하는 작업들은 커널(좀 더 엄밀히 말하자면 디바이스 드라이버)이 하게 되는데, 이 과정에서 메모리가 필요하다. 하지만 메모리를 할당해주는 버디 시스템은 4KB의 페이지 단위로 메모리를 할당한다. 사실 커널 입장에서는 이렇게 큰 영역을 할당 받을 필요가 없다. 또한, 영역이 크다면 실제 사용하는 영역과 할당 받은 영역의 차이가 커지면서 메모리 단편화 현상도 발생할 수 있다. 그렇기 때문에 커널이 사용하려는 메모리 영역은 좀 더 작고 효율적으로 사용할 수 있어야 한다. **이를 충족시키기 위해서 커널은 Slab 할당자를 통해서 원하는 메모리 영역을 확보한다.**
+
+메모리의 기본 단위인 4KB의 영역을 slab 할당자가 어떻게 나눠서 사용하는지를 간단히 정리한 그림이다. 그림을 보면 Slab 할당자는 각각의 목적에 맞는 캐시별로 영역을 할당 받아 사용한다. dentry cache, inode cache 등이 목적별로 나뉘어 있다. 이렇게 버디 시스템을 통해서 페이지 크기인 기본 4KB의 영역을 할당 받은 후에 각각의 캐시 크기에 맞게 영역을 나눠서 사용한다. 그래서 경우에 따라서는 페이지 크기의 배수로 딱 떨어지지 않는 경우도 존재할 수 있다.
+
+간단한 테스트를 통해 Slab 영역이 늘어나는 것을 확인해보자. Slab 영역 중 가장 많이 사용되는 캐시가 dentry와 inode_cache이다. 각각은 **디렉터리의 계층 관계를 저장해두는 캐시**, **파일의 inode에 대한 정보를 저장해두는 캐시**이다.
+
+```bash
+root@ip-172-31-0-131:/home/ubuntu# slabtop -o | grep dentry
+ 39270  32928  83%    0.19K   1870       21      7480K dentry                 
+root@ip-172-31-0-131:/home/ubuntu# cd /boot
+root@ip-172-31-0-131:/boot# ls -l
+total 147357
+-rw------- 1 root root  9205614 Sep 23 21:02 System.map-6.14.0-1015-aws
+-rw------- 1 root root  9204793 Nov 24 18:01 System.map-6.14.0-1018-aws
+-rw-r--r-- 1 root root   270863 Sep 23 21:02 config-6.14.0-1015-aws
+-rw-r--r-- 1 root root   270932 Nov 24 18:01 config-6.14.0-1018-aws
+drwx------ 3 root root      512 Jan  1  1970 efi
+drwxr-xr-x 6 root root     4096 Jan  4 08:19 grub
+lrwxrwxrwx 1 root root       26 Jan  4 08:19 initrd.img -> initrd.img-6.14.0-1018-aws
+-rw-r--r-- 1 root root 43744280 Oct 22 10:15 initrd.img-6.14.0-1015-aws
+-rw-r--r-- 1 root root 43740203 Jan  4 08:20 initrd.img-6.14.0-1018-aws
+lrwxrwxrwx 1 root root       26 Oct 22 10:14 initrd.img.old -> initrd.img-6.14.0-1015-aws
+drwx------ 2 root root    16384 Oct 22 10:03 lost+found
+-rw-r--r-- 1 root root 13274112 Jan  4 08:20 microcode.cpio
+lrwxrwxrwx 1 root root       23 Jan  4 08:19 vmlinuz -> vmlinuz-6.14.0-1018-aws
+-rw------- 1 root root 15567240 Sep 23 21:04 vmlinuz-6.14.0-1015-aws
+-rw------- 1 root root 15575432 Nov 24 18:03 vmlinuz-6.14.0-1018-aws
+lrwxrwxrwx 1 root root       23 Oct 22 10:14 vmlinuz.old -> vmlinuz-6.14.0-1015-aws
+root@ip-172-31-0-131:/boot# slabtop -o | grep dentry
+ 39270  32928  83%    0.19K   1870       21      7480K dentry 
+```
+
+위 예제처럼 간단하게 `cd`로 이동해서 `ls` 명령으로 디렉터리를 살펴보는 것만으로도 dentry 값은 증가한다. (실제로 해보니 증가하지는 않았다.) 만약 **파일에 자주 접근하고 디렉터리의 생성/삭제가 빈번한 시스템이 있다면 Slab 메모리가 높아질 수 있으며, 그 중에서도 dentry, inode_cache가 높아질 수 있다.**
+
+또한 Slab 할당자는 `free` 명령에서는 used로 계산된다. 커널이 사용하는 캐시 영역이기 때문에 buffers/cached 영역에 포함될 것이라고 생각할 수 있지만 used 영역으로 계산된다. 그래서 간혹 프로세스들이 사용하는 메모리 영역을 모두 더하고도 used와 맞지 않을 경우 Slab 메모리에서 누수가 발생하는 것일 수도 있다.
