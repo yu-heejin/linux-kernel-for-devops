@@ -26,3 +26,131 @@ tcp        0      0 172.31.0.128:33870      13.124.245.230:80       TIME_WAIT   
 출발지 IP가 172.31.0.128:33870이며, 목적지 IP가 13.124.245.230:80인 소켓이 있는데 현재 TIME_WAIT 상태이기 때문에 **타이머가 종료되어 커널로 다시 돌아갈 때까지는 사용할 수 없다.**
 
 이처럼 TIME_WAIT 소켓이 많아지면 어떤 문제가 발생할까? 먼저 로컬 포트 고갈에 따른 애플리케이션 타임아웃이 발생할 수 있다. 리눅스에는 `net.ipv4.ip_local_port_range`라는 커널 파라미터가 있는데, 이 파라미터는 외부와 통신하기 위해 필요한 로컬 포트의 범위를 지정하는 역할을 한다. 커널은 프로세스가 외부와 통신하기 위해 소켓의 생성을 요청할 때 해당 소켓이 사용하게 될 로컬 포트에 `net.ipv4.ip_local_port_range`에 정의된 값들 중 하나를 넘겨준다. 이때 모든 로컬 포트가 TIME_WAIT 상태에 있다면 할당할 수 있는 로컬 포트가 없기 때문에 외부와 통신을 하지 못하게 되고, 이로 인해 애플리케이션에서는 타임 아웃이 발생할 수 있다.
+
+그리고 잦은 TCP 연결 맺기/끊기로 인해 서비스의 응답 속도 저하도 일어날 수 있다. TIME_WAIT 소켓은 어찌 되었든 연결을 끊기 때문에 발생하는 것인데, 지속적으로 통신량이 많을 때도 연결의 맺고 끊기를 반복한다면 그만큼 많은 양의 TCP 3-way handshake가 필요하게 되고 이는 전체적인 서비스의 응답 속도 저하를 야기할 수 있다. 이런 현상을 막기 위해 대부분의 애플리케이션에서는 Connection Pool과 같은 방식을 사용해서 한 번 맺어 놓은 TCP 연결을 계속해서 재사용할 수 있게 구현하고 있다. 이를 통해서 불필요한 TCP 3-way handshake를 줄일 수 있어서 성능 향상에도 도움이 된다.
+
+# 7.3 클라이언트에서의 TIME_WAIT
+
+TIME_WAIT은 서버에 생기는 것이 아니라 먼저 연결을 끊는 쪽에서 생성된다. HTTP 기반의 서비스는 대부분 서버가 먼저 연결을 끊는 경우가 많기 때문에 서버에서 TIME_WAIT가 생긴다고 오해할 수 있지만 그렇지 않다.
+
+그럼 클라이언트 입장에서의 TIME_WAIT는 어떻게 발생할 수 있을까? 대부분의 시스템들은 독립적으로 동작하지 않는다. 데이터 저장 및 가공을 위해 데이터베이스, 메모리 기반의 캐시 시스템들과 연동하기도 하고 외부 서비스와의 연동을 위해 API를 호출하기도 한다. 이런 과정에서 서비스를 제공하는 서버는 연동하는 시스템에 대해서는 클라이언트가 될 수 있다.
+
+그림과 같은 과정을 가정해보자. 사용자는 POST 메소드를 이용해 웹 서버에 데이터를 업로드하고 데이터를 받은 웹 서버는 DB 서버에 해당 데이터를 저장한다. 1번 과정을 보면 클라이언트는 USER, 서버는 WEB SERVER다. 하지만 2번 과정을 보면 클라이언트는 WEB SERVER, 서버는 DB SERVER가 된다. 즉, 통신하는 과정에 따라 서버의 역할을 했던 서버는 반대로 클라이언트 역할을 하기도 한다. 그리고 이 과정에서 클라이언트의 역할을 하는 서버가 먼저 연결을 끊는다면 클라이언트 입장의 TIME_WAIT 소켓이 발생할 수 있다.
+
+클라이언트 입장에서 TIME_WAIT가 발생했을 때 가장 큰 문제는 로컬 포트가 고갈되는 것이다. 클라이언트는 요청을 보내기 위해 소켓을 만드는데, 이때 가용한 로컬 포트 중 하나를 임의로 배정 받아서 나가게 된다.
+
+그림과 같은 상황을 가정해보자.
+
+1. 애플리케이션은 DB 서버와의 통신을 위해 커널에 소켓 생성을 요청한다.
+2. 커널은 자신이 관리하고 있는 로컬 포트 목록 중에 사용할 수 있는 포트 번호 한 개를 애플리케이션에 할당한다. 
+3. 애플리케이션은 할당 받은 번호로 커널에 소켓 생성을 요청한다.
+4. 커널은 해당 정보로 소켓을 생성한다. 소켓은 출발지 IP, 출발지 Port, 목적지 IP, 목적지 Port 이 4개의 값을 한 묶음으로 해서 생성하며 해당 소켓은 커널 내부에 유일하게 존재한다. 즉, 4개의 값이 동일한 또 다른 소켓은 존재하지 않는다.
+5. 소켓 생성이 정상적으로 완료되면 커널은 애플리케이션에서 소켓 접근에 사용할 FD(File Descriptor)를 전달해준다.
+
+이렇게 사용된 소켓을 active close 하게 되면 TIME_WAIT 상태로 남는다. 그렇기 때문에 정상적인 상황이라면 해당 소켓은 TIME_WAIT 상태가 풀려서 커널로 다시 돌아갈 때까지 다시 사용할 수 없다. 이런 식으로 다량의 로컬 포트가 TIME_WAIT 상태로 쌓이고 더 이상 사용할 수 있는 포트가 없어지면 로컬 포트가 고갈되며 서버와 통신할 수 없게 된다.
+
+```docker
+root@ip-172-31-0-128:~# curl http://www.kakao.com > /dev/null
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0
+root@ip-172-31-0-128:~# netstat -napo | grep 80
+tcp        0      0 0.0.0.0:80              0.0.0.0:*               LISTEN      575/nginx: master p  off (0.00/0/0)
+tcp        0      0 172.31.0.128:56792      169.254.169.254:80      TIME_WAIT   -                    timewait (11.29/0/0)
+tcp        0      0 172.31.0.128:56692      169.254.169.254:80      TIME_WAIT   -                    timewait (10.60/0/0)
+tcp        0      0 172.31.0.128:56776      169.254.169.254:80      TIME_WAIT   -                    timewait (11.28/0/0)
+                                            # 카카오 요청
+tcp        0      0 172.31.0.128:39894      121.53.93.60:80         TIME_WAIT   -                    timewait (47.09/0/0)
+tcp        0      0 172.31.0.128:80         193.142.147.209:43876   SYN_RECV    -                    on (26.33/5/0)
+tcp        0      0 172.31.0.128:56948      169.254.169.254:80      TIME_WAIT   -                    timewait (12.25/0/0)
+tcp        0      0 172.31.0.128:56666      169.254.169.254:80      TIME_WAIT   -                    timewait (10.29/0/0)
+tcp        0      0 172.31.0.128:56970      169.254.169.254:80      TIME_WAIT   -                    timewait (12.29/0/0)
+tcp        0      0 172.31.0.128:58424      169.254.169.254:80      TIME_WAIT   -                    timewait (2.18/0/0)
+tcp        0      0 172.31.0.128:58660      169.254.169.254:80      TIME_WAIT   -                    timewait (2.24/0/0)
+```
+
+[AWS의 메타데이터 서버가 링크 로컬 주소를 사용하는 이유 ( 169.254.169.254 주소는?)](https://everenew.tistory.com/469)
+
+위 결과를 보면 www.kakao.com에 HTTP 프로토콜로 GET 요청을 할 때 이 요청을 처리할 소켓이 필요한데, (172.31.0.128:39894, 121.53.93.60:80)을 하나의 쌍으로 만들어서 나갔다. 이것은 TIME_WAIT 상태가 풀릴 때까지 동일한 목적지 IP, 동일한 목적지 포트를 사용할 수 없다는 뜻이다.
+
+```docker
+root@ip-172-31-0-128:~# sysctl -w "net.ipv4.ip_local_port_range=39894 39894"
+net.ipv4.ip_local_port_range = 39894 39894
+root@ip-172-31-0-128:~# curl http://www.kakao.com > /dev/null
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0
+root@ip-172-31-0-128:~# curl http://www.kakao.com > /dev/null
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0
+**curl: (7) Failed to connect to www.kakao.com port 80 after 11 ms: Couldn't connect to server**
+```
+
+위 결과를 보면 첫 번째 요청에서 이미 39894를 이용해 나갔으며, 39894를 사용한 소켓은 TIME_WAIT 상태이기 때문에 다음번에 다시 사용할 수 없다. 이런 식으로 외부로의 요청에 TIME_WAIT 소켓이 쌓이면 더 이상 할당할 수 있는 로컬 포트가 없어서 사용자의 요청을 처리할 수 없게 된다.
+
+# 7.4 net.ipv4.tcp_tw_reuse
+
+첫 번쨰로 로컬 포트 고갈에 대응할 수 있는 방법은 커널 파라미터를 이용하는 방법이다. TIME_WAIT 소켓을 처리하는 커널 파라미터 중 **`net.ipv4.tcp_tw_reuse`는 외부로 요청할 때 TIME_WAIT 소켓을 재사용할 수 있게 해준다.** 조건은 아까와 같이 `net.ipv4.local_port_range` 를 39894 39894로 고정시키고 `net.ipv4.tcp_tw_reuse` 값을 1로 설정한 다음 이전 절에서의 테스트와 마찬가지로 `curl` 명령을 두 번 연달아서 입력한다.
+
+```docker
+root@ip-172-31-0-128:~# sysctl -w "net.ipv4.tcp_tw_reuse=1"
+net.ipv4.tcp_tw_reuse = 1
+root@ip-172-31-0-128:~# sysctl -w "net.ipv4.ip_local_port_range=39894 39894"
+net.ipv4.ip_local_port_range = 39894 39894
+root@ip-172-31-0-128:~# curl http://www.kakao.com > /dev/null
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0
+root@ip-172-31-0-128:~# curl http://www.kakao.com > /dev/null
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0
+```
+
+이전 절에서의 테스트 결과와 달리 에러 메시지 없이 잘 실행된다.
+
+그럼 `net.ipv4.tcp_tw_reuse`는 어떤 방식으로 동작하게 되는걸까?
+
+그림을 보면 kernel은 `net.ipv4.local_port_range` 범위 안에서 임의의 값을 선택한 다음 TW Socket Array에 해당 값을 사용하는 동일한 쌍의 소켓이 있는지 확인한다. 이때 `net.ipv4.tcp_tw_reuse` 값이 켜져 있으면 해당 값을 사용하도록 그대로 리턴하고, 꺼져 있으면 다른 값을 선택해서 확인하는 과정을 다시 진행한다. 이를 통해서 `net.ipv4.tcp_tw_reuse`를 사용하면 TIME_WAIT 상태의 소켓을 재사용해서 외부로 요청을 보낸다.
+
+# 7.5 ConnectionPool 방식 사용하기
+
+앞 절에서 `net.ipv4.tcp_tw_reuse`를 사용하면 TIME_WAIT 상태의 소켓을 재사용할 수 있다는 것을 확인했다. 이제 로컬 포트가 고갈되어 발생하는 장애는 처리할 수 있다. 하지만 좀 더 근본적인 문제 해결 방법이 있다.
+
+앞에서도 언급했지만 TIME_WAIT 소켓이 쌓이는 문제는 active close 때문에 발생한다. 즉, 먼저 연결을 끊기 때문에 TIME_WAIT 소켓이 발생하고, 이후의 통신을 위해서 다시 연결을 맺어야 해서 리소스 낭비가 발생한다. 그럼 연결을 먼저 끊지 않으면 되지 않을까? 이럴때 Connection Pool 방식의 접근 방법을 사용한다.
+
+그림을 보면 클라이언트의 동작 방식은 크게 두 가지로 나눌 수 있다. 첫 번째 Connection Less 방식은 HTTP가 많이 사용하는 방식으로, 요청할 때마다 소켓을 새로 연결하는 방식이다. 두 번째 Connection Pool 방식은 미리 소켓을 열어놓고 요청을 처리하는 방식이다. 미리 열어놓기 때문에 불필요한 TCP 연결 맺기/끊기 과정이 없어서 더 좋은 애플리케이션 응답 속도를 구현할 수 있다.
+
+connection_less 코드를 실행시키고 나면 TIME_WAIT 소켓이 1초 단위로 생성되는 것을 볼 수 있다. 하지만 connection_pool 스크립트를 실행시키고 나면 시간이 흘러도 하나의 EST 소켓만 존재한다.
+
+몇개의 요청을 처리할 때는 큰 차이가 없겠지만 초당 수십에서 수백 개의 요청이 들어오는 대규모의 시스템이라면 분명히 응답 속도에 영향이 있다.
+
+Connection Pool 방식은 이렇게 로컬 포트의 무분별한 사용을 막을 수도 있고, 서비스의 응답 속도도 향상시킬 수 있기 때문에 가능한 한 사용하는 것이 좋다. 하지만 Connection Pool 방식도 단점이 있다.
+
+# 7.6 서버 입장에서의 TIME_WAIT 소켓
+
+서버쪽에서 보면 클라이언트와는 상황이 조금 다르다. 서버는 소켓을 열어 놓고 요청을 받아들이는 입장이기 때문에 로컬 포트 고갈과 같은 문제는 일어나지 않는다. 하지만 클라이언트와 마찬가지로 다수의 TIME_WAIT 소켓이 있으면 불필요한 연결 맺기/끊기의 과정이 반복된다. 어떤 경우에 서버에서 TIME_WAIT가 생길 수 있을까?
+
+```docker
+ubuntu@ip-172-31-0-13:~$ netstat -napo | grep -i :80
+(No info could be read for "-p": geteuid()=1000 but you should be root.)
+tcp        0      0 0.0.0.0:80              0.0.0.0:*               LISTEN      -                    off (0.00/0/0)
+tcp        0      0 172.31.0.13:80          121.157.155.227:54504   TIME_WAIT   -                    timewait (49.48/0/0)
+tcp        0      0 172.31.0.13:80          121.157.155.227:54511   TIME_WAIT   -                    timewait (50.56/0/0)
+tcp        0      0 172.31.0.13:80          121.157.155.227:54508   TIME_WAIT   -                    timewait (50.06/0/0)
+tcp        0      0 172.31.0.13:80          121.157.155.227:54505   TIME_WAIT   -                    timewait (47.99/0/0)
+tcp        0      0 172.31.0.13:80          121.157.155.227:54510   TIME_WAIT   -                    timewait (50.38/0/0)
+tcp        0      0 172.31.0.13:80          121.157.155.227:54507   TIME_WAIT   -                    timewait (49.90/0/0)
+tcp        0      0 172.31.0.13:80          121.157.155.227:54509   TIME_WAIT   -                    timewait (50.24/0/0)
+```
+
+keepalive를 껐기 때문에 웹 서버가 먼저 연결을 끊는다. 즉, 웹서버가 active close 했기 때문에 웹 서버에서 TIME_WAIT 소켓이 생긴다.
+
+![image.png](attachment:578a8d66-cc0a-488d-a1c2-9d639f219c51:image.png)
+
+응답 헤더를 살펴보면 Connection: close라는 헤더가 내려온 것을 볼 수 있다. 이 헤더가 내려오면 먼저 연결을 끊는다는 의미이다.
+
+# 7.7 net.ipv4.tcp_tw_recycle
+
+`net.ipv4.tcp_tw_reuse`와 이름은 비슷하지만 전혀 다른 동작 로직을 가진 `net.ipv4.tcp_tw_recycle` 파라미터를 살펴보도록 하자.
