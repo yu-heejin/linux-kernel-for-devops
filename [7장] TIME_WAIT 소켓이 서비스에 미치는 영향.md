@@ -147,7 +147,8 @@ tcp        0      0 172.31.0.13:80          121.157.155.227:54509   TIME_WAIT   
 
 keepalive를 껐기 때문에 웹 서버가 먼저 연결을 끊는다. 즉, 웹서버가 active close 했기 때문에 웹 서버에서 TIME_WAIT 소켓이 생긴다.
 
-![image.png](attachment:578a8d66-cc0a-488d-a1c2-9d639f219c51:image.png)
+<img width="894" height="124" alt="image" src="https://github.com/user-attachments/assets/44849519-a9fc-44db-9938-edfe910d6589" />
+
 
 응답 헤더를 살펴보면 Connection: close라는 헤더가 내려온 것을 볼 수 있다. 이 헤더가 내려오면 먼저 연결을 끊는다는 의미이다.
 
@@ -265,7 +266,8 @@ TIME_WAIT 소켓을 완전히 없앨 수는 없지만 줄일 수 있는 방법�
 
 [TPS와 응답시간](https://performance.tistory.com/4)
 
-![image.png](attachment:9a77a241-a4e9-44ea-9f80-614a20362cff:image.png)
+<img width="936" height="126" alt="image" src="https://github.com/user-attachments/assets/c72c8980-9e5a-45fc-8cab-bc9560384bcf" />
+
 
 위 결과를 보면 Connection:close가 내려왔고, HTTP 클라이언트의 역할을 하는 telnet (나는 http를 썼음..)은 해당 헤더를 읽고 연결을 끊는다. 그리고 서버에서 확인하면 TIME_WAIT 소켓이 생성되어 있음을 볼 수 있다.
 
@@ -275,7 +277,8 @@ TIME_WAIT 소켓을 완전히 없앨 수는 없지만 줄일 수 있는 방법�
 keepalive_timeout 10;
 ```
 
-![image.png](attachment:80a31272-76cb-4ddc-ad75-52da555a7b45:image.png)
+<img width="900" height="116" alt="image" src="https://github.com/user-attachments/assets/245d0be1-818c-4e0c-a9a5-29dfe797272e" />
+
 
 서버의 nginx를 reload하고 클라이언트에서 연결하면 연결이 끊어지지 않는다. 계속해서 명령을 입력할 수 있도록 연결이 유지되어 있으며, 그 후로 계속 GET 요청을 보내도 끊어지지 않는다. keepalive의 타임아웃이 10초로 설정되어 있기 때문에 10초가 지나야만 서버에서 먼저 연결을 끊게 된다.
 
