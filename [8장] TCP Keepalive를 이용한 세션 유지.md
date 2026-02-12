@@ -139,3 +139,128 @@ tcp6       0      0 172.31.0.62:80          15.164.71.151:58544     TIME_WAIT   
 ![나는 Keepalive 패킷이 안 잡힌다..](./img/image.png)
 
 나는 Keepalive 패킷이 안 잡힌다..
+
+이번엔 반대로 TCP keepalive time을 Apache Keepalive Timeout보다 크게 잡아보자.
+
+```yaml
+root@ip-172-31-0-62:/home/ubuntu# sysctl -w net.ipv4.tcp_keepalive_time=120
+net.ipv4.tcp_keepalive_time = 120
+```
+
+```yaml
+root@ip-172-31-0-62:/home/ubuntu# netstat -napo | grep 80
+tcp6       0      0 :::80                   :::*                    LISTEN      531/apache2          off (0.00/0/0)
+tcp6       0      0 172.31.0.62:80          172.31.0.19:49682       ESTABLISHED 533/apache2          keepalive (109.22/0/0)
+unix  3      [ ]         DGRAM      CONNECTED     1804     1/init               /run/systemd/notify
+unix  2      [ ACC ]     STREAM     LISTENING     1807     1/init               /run/systemd/private
+unix  2      [ ACC ]     STREAM     LISTENING     1809     1/init               /run/systemd/userdb/io.systemd.DynamicUser
+unix  3      [ ]         DGRAM      CONNECTED     1806     1/init               
+unix  3      [ ]         DGRAM      CONNECTED     1805     1/init               
+unix  2      [ ACC ]     STREAM     LISTENING     5980     1/init               /run/snapd-snap.socket
+unix  3      [ ]         STREAM     CONNECTED     6480     1/init               @eb9e5b050ea460d0/bus/systemd/bus-api-system
+root@ip-172-31-0-62:/home/ubuntu# netstat -napo | grep 80
+tcp6       0      0 :::80                   :::*                    LISTEN      531/apache2          off (0.00/0/0)
+tcp6       0      0 172.31.0.62:80          172.31.0.19:49682       ESTABLISHED 533/apache2          keepalive (106.87/0/0)
+unix  3      [ ]         DGRAM      CONNECTED     1804     1/init               /run/systemd/notify
+unix  2      [ ACC ]     STREAM     LISTENING     1807     1/init               /run/systemd/private
+unix  2      [ ACC ]     STREAM     LISTENING     1809     1/init               /run/systemd/userdb/io.systemd.DynamicUser
+unix  3      [ ]         DGRAM      CONNECTED     1806     1/init               
+unix  3      [ ]         DGRAM      CONNECTED     1805     1/init               
+unix  2      [ ACC ]     STREAM     LISTENING     5980     1/init               /run/snapd-snap.socket
+unix  3      [ ]         STREAM     CONNECTED     6480     1/init               @eb9e5b050ea460d0/bus/systemd/bus-api-system
+root@ip-172-31-0-62:/home/ubuntu# netstat -napo | grep 80
+tcp        0      0 172.31.0.62:22          13.209.1.60:16376       ESTABLISHED 909/sshd: ubuntu [p  keepalive (6918.80/0/0)
+tcp6       0      0 :::80                   :::*                    LISTEN      531/apache2          off (0.00/0/0)
+tcp6       0      0 172.31.0.62:80          172.31.0.19:49682       ESTABLISHED 533/apache2          keepalive (105.38/0/0)
+unix  3      [ ]         DGRAM      CONNECTED     1804     1/init               /run/systemd/notify
+unix  2      [ ACC ]     STREAM     LISTENING     1807     1/init               /run/systemd/private
+unix  2      [ ACC ]     STREAM     LISTENING     1809     1/init               /run/systemd/userdb/io.systemd.DynamicUser
+unix  3      [ ]         DGRAM      CONNECTED     1806     1/init               
+unix  3      [ ]         DGRAM      CONNECTED     1805     1/init               
+unix  2      [ ACC ]     STREAM     LISTENING     5980     1/init               /run/snapd-snap.socket
+unix  3      [ ]         STREAM     CONNECTED     6480     1/init               @eb9e5b050ea460d0/bus/systemd/bus-api-system
+root@ip-172-31-0-62:/home/ubuntu# netstat -napo | grep 80
+tcp6       0      0 :::80                   :::*                    LISTEN      531/apache2          off (0.00/0/0)
+tcp6       0      0 172.31.0.62:80          172.31.0.19:49682       ESTABLISHED 533/apache2          keepalive (103.44/0/0)
+unix  3      [ ]         DGRAM      CONNECTED     1804     1/init               /run/systemd/notify
+unix  2      [ ACC ]     STREAM     LISTENING     1807     1/init               /run/systemd/private
+unix  2      [ ACC ]     STREAM     LISTENING     1809     1/init               /run/systemd/userdb/io.systemd.DynamicUser
+unix  3      [ ]         DGRAM      CONNECTED     1806     1/init               
+unix  3      [ ]         DGRAM      CONNECTED     1805     1/init               
+unix  2      [ ACC ]     STREAM     LISTENING     5980     1/init               /run/snapd-snap.socket
+unix  3      [ ]         STREAM     CONNECTED     6480     1/init               @eb9e5b050ea460d0/bus/systemd/bus-api-system
+root@ip-172-31-0-62:/home/ubuntu# netstat -napo | grep 80
+tcp6       0      0 :::80                   :::*                    LISTEN      531/apache2          off (0.00/0/0)
+tcp6       0      0 172.31.0.62:80          172.31.0.19:49682       ESTABLISHED 533/apache2          keepalive (101.51/0/0)
+unix  3      [ ]         DGRAM      CONNECTED     1804     1/init               /run/systemd/notify
+unix  2      [ ACC ]     STREAM     LISTENING     1807     1/init               /run/systemd/private
+unix  2      [ ACC ]     STREAM     LISTENING     1809     1/init               /run/systemd/userdb/io.systemd.DynamicUser
+unix  3      [ ]         DGRAM      CONNECTED     1806     1/init               
+unix  3      [ ]         DGRAM      CONNECTED     1805     1/init               
+unix  2      [ ACC ]     STREAM     LISTENING     5980     1/init               /run/snapd-snap.socket
+unix  3      [ ]         STREAM     CONNECTED     6480     1/init               @eb9e5b050ea460d0/bus/systemd/bus-api-system
+root@ip-172-31-0-62:/home/ubuntu# netstat -napo | grep 80
+tcp6       0      0 :::80                   :::*                    LISTEN      531/apache2          off (0.00/0/0)
+tcp6       0      0 172.31.0.62:80          172.31.0.19:49682       ESTABLISHED 533/apache2          keepalive (100.56/0/0)
+unix  3      [ ]         DGRAM      CONNECTED     1804     1/init               /run/systemd/notify
+unix  2      [ ACC ]     STREAM     LISTENING     1807     1/init               /run/systemd/private
+unix  2      [ ACC ]     STREAM     LISTENING     1809     1/init               /run/systemd/userdb/io.systemd.DynamicUser
+unix  3      [ ]         DGRAM      CONNECTED     1806     1/init               
+unix  3      [ ]         DGRAM      CONNECTED     1805     1/init               
+unix  2      [ ACC ]     STREAM     LISTENING     5980     1/init               /run/snapd-snap.socket
+unix  3      [ ]         STREAM     CONNECTED     6480     1/init               @eb9e5b050ea460d0/bus/systemd/bus-api-system
+root@ip-172-31-0-62:/home/ubuntu# netstat -napo | grep 80
+tcp6       0      0 :::80                   :::*                    LISTEN      531/apache2          off (0.00/0/0)
+tcp6       0      0 172.31.0.62:80          172.31.0.19:49682       TIME_WAIT   -                    timewait (59.75/0/0)
+unix  3      [ ]         DGRAM      CONNECTED     1804     1/init               /run/systemd/notify
+unix  2      [ ACC ]     STREAM     LISTENING     1807     1/init               /run/systemd/private
+unix  2      [ ACC ]     STREAM     LISTENING     1809     1/init               /run/systemd/userdb/io.systemd.DynamicUser
+unix  3      [ ]         DGRAM      CONNECTED     1806     1/init               
+unix  3      [ ]         DGRAM      CONNECTED     1805     1/init               
+unix  2      [ ACC ]     STREAM     LISTENING     5980     1/init               /run/snapd-snap.socket
+unix  3      [ ]         STREAM     CONNECTED     6480     1/init               @eb9e5b050ea460d0/bus/systemd/bus-api-system
+root@ip-172-31-0-62:/home/ubuntu# netstat -napo | grep 80
+tcp6       0      0 :::80                   :::*                    LISTEN      531/apache2          off (0.00/0/0)
+tcp6       0      0 172.31.0.62:80          172.31.0.19:49682       TIME_WAIT   -                    timewait (58.96/0/0)
+unix  3      [ ]         DGRAM      CONNECTED     1804     1/init               /run/systemd/notify
+unix  2      [ ACC ]     STREAM     LISTENING     1807     1/init               /run/systemd/private
+unix  2      [ ACC ]     STREAM     LISTENING     1809     1/init               /run/systemd/userdb/io.systemd.DynamicUser
+unix  3      [ ]         DGRAM      CONNECTED     1806     1/init               
+unix  3      [ ]         DGRAM      CONNECTED     1805     1/init               
+unix  2      [ ACC ]     STREAM     LISTENING     5980     1/init               /run/snapd-snap.socket
+unix  3      [ ]         STREAM     CONNECTED     6480     1/init               @eb9e5b050ea460d0/bus/systemd/bus-api-system
+root@ip-172-31-0-62:/home/ubuntu# netstat -napo | grep 80
+tcp6       0      0 :::80                   :::*                    LISTEN      531/apache2          off (0.00/0/0)
+tcp6       0      0 172.31.0.62:80          172.31.0.19:49682       TIME_WAIT   -                    timewait (58.20/0/0)
+unix  3      [ ]         DGRAM      CONNECTED     1804     1/init               /run/systemd/notify
+unix  2      [ ACC ]     STREAM     LISTENING     1807     1/init               /run/systemd/private
+unix  2      [ ACC ]     STREAM     LISTENING     1809     1/init               /run/systemd/userdb/io.systemd.DynamicUser
+unix  3      [ ]         DGRAM      CONNECTED     1806     1/init               
+unix  3      [ ]         DGRAM      CONNECTED     1805     1/init               
+unix  2      [ ACC ]     STREAM     LISTENING     5980     1/init               /run/snapd-snap.socket
+unix  3      [ ]         STREAM     CONNECTED     6480     1/init               @eb9e5b050ea460d0/bus/systemd/bus-api-system
+root@ip-172-31-0-62:/home/ubuntu# netstat -napo | grep 80
+tcp6       0      0 :::80                   :::*                    LISTEN      531/apache2          off (0.00/0/0)
+tcp6       0      0 172.31.0.62:80          172.31.0.19:49682       TIME_WAIT   -                    timewait (57.21/0/0)
+unix  3      [ ]         DGRAM      CONNECTED     1804     1/init               /run/systemd/notify
+unix  2      [ ACC ]     STREAM     LISTENING     1807     1/init               /run/systemd/private
+unix  2      [ ACC ]     STREAM     LISTENING     1809     1/init               /run/systemd/userdb/io.systemd.DynamicUser
+unix  3      [ ]         DGRAM      CONNECTED     1806     1/init               
+unix  3      [ ]         DGRAM      CONNECTED     1805     1/init               
+unix  2      [ ACC ]     STREAM     LISTENING     5980     1/init               /run/snapd-snap.socket
+unix  3      [ ]         STREAM     CONNECTED     6480     1/init               @eb9e5b050ea460d0/bus/systemd/bus-api-system
+root@ip-172-31-0-62:/home/ubuntu# netstat -napo | grep 80
+tcp6       0      0 :::80                   :::*                    LISTEN      531/apache2          off (0.00/0/0)
+tcp6       0      0 172.31.0.62:80          172.31.0.19:49682       TIME_WAIT   -                    timewait (55.63/0/0)
+unix  3      [ ]         DGRAM      CONNECTED     1804     1/init               /run/systemd/notify
+unix  2      [ ACC ]     STREAM     LISTENING     1807     1/init               /run/systemd/private
+unix  2      [ ACC ]     STREAM     LISTENING     1809     1/init               /run/systemd/userdb/io.systemd.DynamicUser
+unix  3      [ ]         DGRAM      CONNECTED     1806     1/init               
+unix  3      [ ]         DGRAM      CONNECTED     1805     1/init               
+unix  2      [ ACC ]     STREAM     LISTENING     5980     1/init               /run/snapd-snap.socket
+unix  3      [ ]         STREAM     CONNECTED     6480     1/init               @eb9e5b050ea460d0/bus/systemd/bus-api-system
+```
+
+설정한 대로 120초에서 타이머가 시작된다. 그리고 서서히 줄어들다가 Apache Keepalive timeout에 지정한 60초가 지나면 연결이 끊어진다. 역시 이번에도 서버가 먼저 연결을 끊는다.
+
+두 개의 테스트를 통해 TCP Keepalive가 설정되어 있어도 HTTP Keepalive가 설정되어 있다면 해당 설정 값에 맞춰서 동작한다는 것을 확인했다. **즉, HTTP Keepalive가 설정되어 있다면 해당 설정 값을 기준으로 의도했던 대로 동작하기 때문에 TCP Keepalive의 값과 HTTP Keepalive의 값이 서로 다르다고 해도 걱정하지 않아도 된다.**
