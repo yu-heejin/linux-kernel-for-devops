@@ -59,4 +59,91 @@ tcp6       0      0 172.31.0.62:80          172.31.0.19:42074       ESTABLISHED 
 tcp6       0      0 172.31.0.62:80          172.31.0.19:58808       TIME_WAIT   -                    timewait (36.01/0/0)
 ```
 
-이렇게 특정 프로세스에 할당되지 않고 커널에 귀속되어 정리되기를 기다리는 소켓 중에서도 FIN_WAIT1 상태의 소켓을 orphan socket이라고 하며, 이 값으로 재전송하는 횟수를 정의한다. 왜 FIN_WAIT2와 TIME_WAIT는 아니고 FIN_WAIT1만 해당될까?
+이렇게 특정 프로세스에 할당되지 않고 커널에 귀속되어 정리되기를 기다리는 소켓 중에서도 FIN_WAIT1 상태의 소켓을 orphan socket이라고 하며, 이 값으로 재전송하는 횟수를 정의한다. 왜 FIN_WAIT2와 TIME_WAIT는 아니고 F
+
+그림에서도 볼 수 있지만 FIN을 보내고 난 후에 FIN_WAIT1이 되고 상대방으로부터 응답을 받으면 FIN_WAIT2에서 TIME_WAIT 상태가 된다. 이 과정을 잘 보면 연결을 끊을 때 자신이 보내는 마지막 패킷은 FIN_WAIT1 상태가 되기 위한 FIN이 된다. 그 이후로는 보내는 패킷은 없고 상대방으로부터 받는 패킷만 있다. 재전송은 내가 보내는 패킷에 대해 재전송하는 것이기 때문에 마지막으로 보내는 패킷에 해당하는 FIN_WAIT1 상태의 소켓만 해당되는 것이다.
+
+사실 FIN을 보낸 후 아주 짧은 시간에 FIN_WAIT1 상태에서 FIN_WAIT2 상태로 빠지고 TIME_WAIT 상태로 이어진다. FIN 전송과 그에 대한 ACK을 받는 과정이 굉장히 빠르게 이루어지기 때문이다. 하지만 테스트에서는 FIN에 대한 ACK을 받을 수 없기 때문에 해당 소켓은 계속해서 FIN_WAIT1 상태로 남아있게 된다. 이 소켓은 `net.ipv4.tcp_orphan_retires`에 정의한 횟수만큼 재전송을 시도하고 그 후에도 응답을 받지 못하면 비정상적이라고 판단하고 커널이 해당 소켓을 강제로 회수한다.
+
+결과적으로 `net.ipv4.tcp_orphan_retries` 에 설정한 값보다 1번 더 보낸다고 생각할 수 있다.
+
+FIN_WAIT1 상태에서 지정된 재전송 횟수까지 모두 보내고 나면 해당 소켓은 어떻게 될까? FIN_WAIT2, TIME_WAIT 상태로 변경되지 않고 이미 죽은 소켓으로 판단해 소켓을 아예 회수해버린다. 그렇기 때문에 `net.ipv4.tcp_orphan_retires` 값이 너무 작으면 FIN 패킷이 유실된 상태의 FIN_WAIT1 소켓이 너무 빨리 정리될 수 있으며, 상대편에 닫혀야 되는 소켓이 닫히지 않는 결과를 초래할 수도 있다. 그래서 최소한 TIME_WAIT이 유지되는 시간인 60초 정도가 될 수 있도록 7 정도의 값을 설정하는 것이 좋다. 그래야 최소한 TIME_WAIT가 남아있는 만큼의 효과를 유지할 수 있다.
+
+## net.ipv4.tcp_retries1, net.ipv4.tcp_retries2
+
+이 두 값은 서로 연관이 있다. TCP는 기본적으로 재전송을 하기 위한 임계치 값으로 두 개의 값을 가지고 있다. 두 값 모두 최종적으로는 재전송 횟수를 정의하지만, **첫번째 값은 IP 레이어에 네트워크가 잘못 되었는지 확인하도록 사인을 보내는 기준이 되며, 두 번째 값은 더 이상 통신을 할 수 없다고 판단하는 기준이 된다.** 간단하게 첫 번째 값을 soft threshold, 두 번째 값은 hard threshold라고 생각하면 된다. 결과적으로는 두번째 값에 정의된 횟수만큼을 넘겨야 실제 연결이 끊어진다.
+
+# 9.3 재전송 추적하기
+
+`tcpretrans` 스크립트를 통해 재전송 여부를 추적할 수 있다.
+
+```docker
+root@ip-172-31-0-62:/home/ubuntu# ./tcpretrans 
+TIME     PID    LADDR:LPORT          -- RADDR:RPORT          STATE  
+```
+
+`tcpretrans` 스크립트를 살펴보면 1초에 한 번씩 깨어나서 `ftrace`를 통해 수집한 커널 함수 정보를 바탕으로 재전송이 일어났는지 아닌지를 파악한 후, /proc/net/tcp의 내용을 파싱해서 어떤 세션에서 재전송이 일어났는지를 출력한다.
+
+RTO_MIN 값이 200ms기 때문에 1초의 인터벌은 트래픽이 많은 서버라면 재전송되는 패킷을 놓칠 수도 있다. 그래서 좀 더 정확한 추적이 필요하다면 interval 값을 200ms로 수정해서 실행시키는 방법을 취한다.
+
+# 9.4 RTO_MIN 값 변경하기
+
+RTO_MIN값이 200ms이기 때문에 아무리 RTT가 작은, 빠른 내부 통신의 경우에도 RTO 값은 200ms 밑으로 내려갈 수 없다.
+
+```c
+#define TCP_RTO_MAX ((unsigned)(120*HZ))
+#define TCP_RTO_MIN ((unsigned)(HZ/5))
+```
+
+커널 소스 코드를 살펴보면 위와 같이 `TCP_RTO_MAX`, `TCP_RTO_MIN` 값을 define으로 정의했다. HZ의 경우 보통 1초이기 때문에 RTO의 최댓값은 120초, 최솟값은 200ms이다. RTO가 RTT를 기반으로 계산되지만 `TCP_RTO_MIN` 이 200이기 때문에 무조건 200보다는 커진다.
+
+```c
+cubic wscale:7,7 rto:202 rtt:1.18/0.056 ato:57 mss:1448 pmtu:9001 rcvmss:1448 advmss:8949 cwnd:10 bytes_sent:42975 bytes_acked:42975 bytes_received:15632 segs_out:295 segs_in:415 data_segs_out:282 data_segs_in:143 send 98.2Mbps lastsnd:37 lastrcv:38 lastack:36 pacing_rate 196Mbps delivery_rate 41.6Mbps delivered:283 app_limited busy:496ms rcv_space:17408 rcv_ssthresh:35328 minrtt:0.961 snd_wnd:56704
+```
+
+- rto: 현재 연결되어 있는 세션의 RTO 값이다. RTO는 RTT를 기반으로 생성되기 때문에 세션마다 별도의 RTO 값을 가지고 있다.
+- rtt: 현재 연결되어 있는 세션의 RTT 값이다. 앞의 값은 RTT의 최댓값, 뒤에 있는 값은 측정된 RTT의 편차다. 즉, 패킷을 주고 받는 데에만 1.18ms의 시간이 걸리며 각각의 패킷은 편차 0.056ms 이내에서 값이 변동된다는 의미이다.
+
+RTO의 값은 RTT를 기반으로 생성되며 `TCP_RTO_MIN` 값이 200이기 때문에 위의 예제를 보면 RTO가 202로 계산된 것을 볼 수 있다. 물론 RTO가 RTO_MIN + RTT_MAX라는 단순한 식은 아니지만, 얼추 그 정도 값이라고 추측해볼 수 있다.이 세션의 경우 RTT의 최댓값이 1.18ms에 편차가 0.056ms이고, 대부분의 패킷이 등락이 크지 않은 상태로 1.18ms 정도의 수준이라면 주고받을 수 있다는 것을 의미한다. 그런데 RTO가 202라면 너무 큰 것 같지 않은가? 비교적 긴 시간동안 기다리는 것은 오히려 더 낭비일 수 있다. 이 값을 바꿀 수는 없을까?
+
+리눅스에 있는 `ip route` 라는 명령의 rto_min 옵션을 통해서 RTO의 최솟값을 `TCP_RTO_MIN` 보다 작게 바꿔줄 수 있다. 세션별로 바꿀 수는 없으며, 하나의 네트워크 디바이스를 기준으로 바꿀 수 있다.
+
+```c
+ip route change default via <GW> dev <DEVICE> rto_min 100ms
+```
+
+먼저 `ip route` 명령을 이용해서 현재 서버에 설정되어 있는 라우팅 정보를 확인한다.
+
+```c
+root@ip-172-31-0-62:/home/ubuntu# ip route
+**default via 172.31.0.1 dev enX0** proto dhcp src 172.31.0.62 metric 100 
+172.31.0.0/24 dev enX0 proto kernel scope link src 172.31.0.62 metric 100 
+172.31.0.1 dev enX0 proto dhcp scope link src 172.31.0.62 metric 100 
+172.31.0.2 dev enX0 proto dhcp scope link src 172.31.0.62 metric 100 
+```
+
+첫 번째 줄이 우리가 필요로 하는 정보다. 기본적으로 외부와의 통신을 위한 모든 패킷은 enX0이라는 네트워크 디바이스의 172.31.0.1 게이트웨이를 통해서 나간다는 의미이다.
+
+```c
+root@ip-172-31-0-62:/home/ubuntu# ip route change default via 172.31.0.1 dev enX0 rto_min 100ms
+RTNETLINK answers: No such file or directory
+root@ip-172-31-0-62:/home/ubuntu# sysctl -a 2>/dev/null | grep -i rto
+net.ipv4.tcp_frto = 2
+net.ipv4.tcp_plb_suspend_rto_sec = 60
+net.ipv4.tcp_rto_min_us = 200000
+net.netfilter.nf_conntrack_dccp_timeout_partopen = 480
+root@ip-172-31-0-62:/home/ubuntu# sudo sysctl -w net.ipv4.tcp_rto_min_us=100
+net.ipv4.tcp_rto_min_us = 100
+```
+
+- 우분투에서는 책처럼 변경하는 건 불가능하고 위 값을 바꿔줬다.
+    
+    ```c
+             cubic wscale:7,7 rto:202 rtt:1.094/0.062 
+    ```
+    
+    - 변화가 없다 ㅠㅠ
+
+사실 rto_min이 어느 정도면 적당한가에 대한 답은 없다. 외부에 노출된 웹 서버에는 다양한 고객들이 접근하기 때문에 기본값으로 정해진 200ms를 따르는 것이 좋겠지만, 내부와 통신하는 서버에서는 200ms라는 값이 길게 느껴지는 것이 사실이다. 내부 통신의 rtt는 매우 짧기 때문에 좀 더 빠른 재전송이 필요한지 확인하고, rto_min 값을 그에 상응하는 수준으로 낮춰서 빨리 보내는 것이 서비스의 품질을 높일 수 있는 좋은 방법이다. 하지만 이 값이 너무 낮다면 너무 잦은 재전송이 일어날 수도 있기 때문에 신중해야 한다.
+
+[네트워크 안정성 및 성능 향상을 위한 리눅스 TCP RTO 및 tcp_retries2 파라미터의 작동 원리](https://osslab.s-core.co.kr/232035f5-1294-80ad-b6f7-fd94179c5bed)
