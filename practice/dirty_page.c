@@ -16,8 +16,16 @@ int main() {
     for (; ;) {
         count++;
         write(output_fd, message, MEGABYTE);
-        printf("Write File - Current Size : %d KB\n", count * 1024);
-        sleep(1);
+        if (count % 1000 == 0) {
+            output_fd = open(file_name, O_CREAT | O_RDWR | O_TRUNC);
+        }
+        // printf("Write File - Current Size : %d KB\n", count * 1024);
+
+        if (count >= 5000) {
+            break;
+        }
+
+        // sleep(1);
     }
 
     return 0;

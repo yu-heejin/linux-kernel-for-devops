@@ -329,3 +329,100 @@ cat: ./trace_pipe: Device or resource busy
 테스트 결과를 보면 64MB를 조금 넘긴 후에 백그라운드 동기화가 일어나서 dirty page가 없어진 것을 확인할 수 있다.
 
 여기서 재밌는 함수를 확인할 수 있다. `balance_dirty_pages_ratelimited_nr()` 함수와 `balance_dirty_pages()`라는 함수가 보인다. ftrace의 결과를 `grep balance_dirty_pages` 명령으로 필터링해보면 다수의 `balance_dirty_pages_ratelimited_nr()` 함수가 호출된 후 중간 중간에 `balance_dirty_pages()` 함수가 호출되는 패턴이다. 그리고 `balance_dirty_pages_rattelimited_nr()` 함수는 `generic_file_buffered_write()` 함수에 의해 호출된다. 그래서 dirty page를 생성하는 모든 프로세스들은 쓰기 작업이 이루어질 때마다 `balance_dirty_pages_ratelimited_nr()` 함수를 호출하게 되며, 이 함수는 내부적으로 `balance_dirty_pages()` 함수를 호출한다는 것을 알 수 있다.
+
+커널의 소스 코드를 확인해보자. 사실 dirty page가 생성될 때마다 시스템의 모든 dirty page를 검사하고 확인하는 과정을 거치면 오버헤드가 꽤 크기 때문에 일정 수준 이상이 되었을 때만 확인 과정을 거치도록 비율을 이용해 제한을 주는 함수이다. 그래서 `ratelimit`라는 변수의 값을 이용해 해당 프로세스가 생성하는 dirty page의 크기가 일정 수준을 넘어서면 그때서야 비로소 `balance_dirty_pages()` 함수를 호출해서 시스템의 모든 dirty page의 크기를 바탕으로 동기화가 필요한지 여부를 확인한다. 아주 적은 양의 dirty page를 생성했는데 전체 시스템의 dirty page 크기를 계산해서 비교하게 되면 그것은 그것대로 시스템에 부하를 일으킬 수 있기 때문이다. 그럼 초기 비교 대상이 되는 `ratelimit_pages` 값은 어떻게 결정될까? 같은 파일 안에 `writeback_set_ratelimit()`이라는 함수를 통해 결정된다. 시스템의 CPU 수와 메모리 크기에 따라 다를 수 있겠지만 특정 값을 넘어서는 큰 값이 될 경우 보통은 1024로 설정된다. PAGE_CACHE_SIZE의 값은 page의 크기와 같은 4KB이기 때문에 `ratelimit_pages` 값이 1024가 된다면 4MB의 쓰기 작업이 이루어질 때마다 `balance_dirty_pages()` 함수가 호출된다고 볼 수 있다.
+
+`balance_dirty_pages_ratelimited_nr()` 함수를 통과하고 `balance_dirty_pages()`를 성공적으로 호출하게 되면 본격적인 dirty page 크기 확인과 임계치 값을 확인하는 과정이 진행된다.
+
+다음으로 주기적인 동기화를 살펴보자. 이번에는 백그라운드 작업이 영향을 끼치지 않도록 큰 값으로 설정한 후 테스트해보자.
+
+```yaml
+root@ip-172-31-0-19:/home/ubuntu# sysctl -w vm.dirty_background_ratio=20
+vm.dirty_background_ratio = 20
+root@ip-172-31-0-19:/home/ubuntu# sysctl -w vm.dirty_ratio=40
+vm.dirty_ratio = 40
+root@ip-172-31-0-19:/home/ubuntu# sysctl -w vm.dirty_writeback_centisecs=500
+vm.dirty_writeback_centisecs = 500
+root@ip-172-31-0-19:/home/ubuntu# sysctl -w vm.dirty_expire_centisecs=1000
+vm.dirty_expire_centisecs = 1000
+```
+
+위와 같이 설정하면 flush 커널 스레드가 5초에 한 번 깨어나서 생성된 지 10초가 넘은 dirty page들을 동기화하게 된다.
+
+```yaml
+Dirty:              7484 kB
+Dirty:              8492 kB
+Dirty:              9532 kB
+Dirty:             10432 kB
+Dirty:             11436 kB
+Dirty:             12444 kB
+Dirty:             13484 kB
+Dirty:             14492 kB
+Dirty:             15360 kB
+Dirty:              1032 kB
+Dirty:              2076 kB
+Dirty:              3084 kB
+Dirty:              4124 kB
+Dirty:              5132 kB
+Dirty:              6172 kB
+Dirty:              7180 kB
+Dirty:              8220 kB
+Dirty:              9228 kB
+Dirty:             10268 kB
+Dirty:                 8 kB
+```
+
+1초에 1MB씩 쓰기 작업을 하기 때문에 flush 커널 스레드가 깨어나는 타이밍과 맞으면 10~15MB 사이에서 dirty page가 유지된다.
+
+<aside>
+💡
+
+flush 커널 스레드가 깨어나는 순간 생성된 지 10초 이상 된 dirty page가 동기화되는데, **동기화 작업은 inode를 기준으로 발생하기 때문에 10초 이상된 dirty page가 포함된 파일의 모든 dirty page가 함께 동기화된다.**
+
+</aside>
+
+flush 커널 스레드가 커널 스케줄러에 의해 깨어나는 것을 확인할 수 있다.
+
+# 10.4 dirty page 설정과 I/O 패턴
+
+```yaml
+root@ip-172-31-0-19:/home/ubuntu# ./show_dirty.sh 
+Dirty:                 0 kB
+Dirty:                 0 kB
+Dirty:                 0 kB
+Dirty:                 0 kB
+Dirty:                 0 kB
+Dirty:                 0 kB
+Dirty:                 0 kB
+Dirty:                 0 kB
+Dirty:               148 kB
+Dirty:             42124 kB
+Dirty:             27280 kB
+Dirty:              9456 kB
+Dirty:             25704 kB
+Dirty:                 0 kB
+Dirty:                 0 kB
+Dirty:                 0 kB
+Dirty:                 0 kB
+Dirty:                 0 kB
+```
+
+`vm.dirty_background_ratio` 값이 10이기 때문에 8GB 메모리 중 800MB 정도의 dirty page가 생겨야 동기화를 시작한다. (나는 결과랑 좀 다르다.) 그래서 `iostat` 로 I/O 사용량을 살펴보면 대부분 0%에서 갑자기 100%에 이르는 패턴을 보인다. flush 커널 스레드가 깨어나는 조건이 더 길어지는 대신에 한번에 동기화해야 하는 양이 많아지기 때문이다.
+
+```yaml
+root@ip-172-31-0-19:/home/ubuntu# ./show_dirty.sh 
+Dirty:                 0 kB
+Dirty:                 0 kB
+Dirty:             50664 kB
+Dirty:             50380 kB
+Dirty:                 0 kB
+Dirty:                 0 kB
+Dirty:                 0 kB
+Dirty:                 0 kB
+```
+
+첫 번째 테스트에 비하면 1/10 수준으로 dirty page의 크기가 유지되는 것을 볼 수 있다. vm.dirty_background_ratio를 10에서 1로 줄였기 때문에 당연한 결과다. (왜 난 결과 다르냐 ㅠㅜㅠ)
+
+더 자주 flush 커널 스레드가 깨어나지만 한 번에 동기화시켜야할 양이 첫번째에 비해 적다. 물론 98%도 높은 수치이긴 하지만 첫 번째 테스트에 비해 io util(%)의 최댓값이 작아졌다. 동기화해야 할 dirty page의 크기가 더 적기 때문이다.
+
+dirty page 동기화와 관련해서 가장 중요한 부분은 flush 커널 스레드를 얼마나 자주 깨울 것인지, 깨울 때 어느 정도의 양을 동기화할지를 설정하는 것이다. 위에서 살펴본 것처럼 자주 깨어나면 io util이 비교적 적지만 flush 커널 스레드가 자주 깨어나는 단점이 있고, 늦게 깨우면 flush 커널 스레드는 자주 깨어나지 않지만 io util이 높아지는 단점이 있다. flush 커널 스레드가 너무 자주 깨어나면 스케줄링에 대한 오버헤드가 발생할 수 있으며, 멀티 스레드 환경의 애플리케이션의 경우 불필요하게 자주 깨어나는 flush 커널 스레드에 cpu 리소스를 빼앗길 수 있기 때문에 성능 저하가 발생할 수 있다. 이렇게 dirty page 동기화를 어떻게 설정하느냐는 각각의 경우에 따라 장단점이 있으며, 어떤 것이 더 낫다는 절대적인 기준은 없다. 따라서 현재 시스템에서 발생하는 워크로드와 디스크의 성능에 따라 결정해야 한다. 예를 들어 똑같이 초당 1MB의 dirty page를 생성하는 애플리케이션이 서로 다른 두 개의 시스템에서 동작하고 있다고 가정해보자. A 시스템의 디스크는 초당 10MB의 쓰기 작업을 견딜 수 있고, B 시스템의 디스크는 초당 100MB의 쓰기 작업을 견딜 수 있다고 했을 때 두 시스템은 같은 애플리케이션을 동작시키지만 dirty page 동기화에 대해서는 서로 다른 전략을 사용해야 한다. A 시스템에서 한 번에 dirty page를 100MB를 동기화하면 background 동기화 속도가 애플리케이션이 생성하는 dirty page 속도를 따라잡지 못할 것이고, 이렇게 되면 결국 dirty_ratio까지 dirty page가 쌓이게 되어 애플리케이션의 성능에 영향을 줄 수 있다. 그렇기 때문에 A 시스템에서는 10MB 단위로 dirty page를 동기화할 수 있도록 설정하는 것이 전체적인 성능에 도움이 된다. 반대로 B 시스템은 디스크의 성능이 좋기 때문에 굳이 10MB 수준에서 flush 커널 스레드를 깨울 필요가 없다.
