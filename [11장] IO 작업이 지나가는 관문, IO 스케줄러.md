@@ -240,4 +240,169 @@ deadline I/O 스케줄러에서 튜닝이 가능한 값은 총 5가지가 있다
 
 첫번째 값은 `fifo_batch`이다. 이 값은 한번에 dispatch queue를 통해서 실행할 I/O 요청의 개수이다. deadline은 batch라는 이름으로 다수의 I/O 요청을 처리하는데, 이떄 몇 개의 I/O 요청을 전달할 것인지 결정하는 값이다. 기본값은 16개로, 16개의 I/O 요청이 하나의 batch로 간주되어 처리된다.
 
-두번째 값은 `front_merges`이다. I/O 작업은 계속해서 섹터가 증가하는 구조이다. 로그 파일 쓰기를 생각해 보자. 새로운 로그는 기존 로그의 뒤에 추가되는데 이를 디바이스의 관점에서 본다면 계속해서 섹터가 증가하는 추세가 될 것이다. 중간에 특별히 다른 로직을 넣지 않는다면 이렇게 섹터가 증가하는 I/O 요청이 가장 자연스러운 요청의 형태이다.
+두번째 값은 `front_merges`이다. I/O 작업은 계속해서 섹터가 증가하는 구조이다. 로그 파일 쓰기를 생각해 보자. 새로운 로그는 기존 로그의 뒤에 추가되는데 이를 디바이스의 관점에서 본다면 계속해서 섹터가 증가하는 추세가 될 것이다. 중간에 특별히 다른 로직을 넣지 않는다면 이렇게 섹터가 증가하는 I/O 요청이 가장 자연스러운 요청의 형태이다. 하지만 파일의 앞에, 즉 현재 헤더 위치의 뒤가 아닌 앞쪽으로 I/O 요청이 발생하는 경우도 있는데, 이를 탐색하는 것이 front_merges값이다. 이 값은 0 혹은 1의 boolean 형태이며 기본값은 1이다. 만약 현재 시스템에서 발생하는 워크로드가 순차 쓰기, 혹은 순차 읽기가 주를 이루고 있다면 이 값을 0으로 해서 성능을 조금 더 향상시킬 수 있다.
+
+세번째 값은 `read_expire`이다. 발생한 I/O 요청 중 read 요청에 대해 deadline을 결정할 때 사용되는 값으로 기본값은 500이며 단위는 ms이다. 즉, 읽기 요청은 500ms 동안 처리되지 않으면 만료된다.
+
+네 번째 값은 `write_expire`이다. `read_expire`과 동일한 역할을 하며, write 요청에 대한 deadline을 결정할 때 사용된다. 단위는 역시 ms이며 기본값은 5000이다. 값을 보면 짐작할 수 있겠지만 deadline I/O 스케줄러는 읽기 요청 deadline이 더 짧아서 읽기 요청에 대한 처리를 좀 더 선호하도록 설계되어 있다.
+
+마지막 다섯 번째 값은 `writes_starved`이다. 위에서도 언급했지만 deadline I/O 스케줄러는 읽기 요청에 대한 처리를 더 선호하기 때문에 자칫 잘못하면 쓰기 요청의 처리가 계속해서 지연될 수 있다. 그래서 이 값은 읽기 요청과 쓰기 요청 사이의 밸런스를 설정한다. 단위는 횟수이며 기본값은 2이다. 즉, 읽기 요청을 2번 처리하면 쓰기 요청을 1번 처리하는 식으로 동작한다. 이때의 요청은 하나의 요청을 의미하는 것이 아니라 한 번의 batch를 의미한다. 2번의 읽기 요청에 대한 batch 이후에 1번의 쓰기 요청에 대한 batch를 처리한다.
+
+지금까지의 값을 토대로 살펴보면 deadline I/O 스케줄러는 쓰기 요청보다 읽기 요청을 더 많이 처리하도록 설계되었으며, batch와 같은 형태로 한번에 다수의 I/O 요청을 처리하고 있음을 알 수 있다. 하지만 파라미터를 변경해서 조금 더 워크로드에 맞도록 수정할 수도 있다. 예를 들어 `write_expire`에 `read_expire`와 동일한 값을 주고 `writes_starved`를 1로 주면 읽기와 쓰기 요청을 동등하게 처리한다.
+
+# 11.5 noop I/O 스케줄러
+
+noop 스케줄러는 간단한 형태의 I/O 스케줄러이다. 흔히 아무것도 하지 않는다고 생각할 수 있지만 noop 스케줄러도 병합 작업을 한다. 위에서 언급한 I/O 스케줄러의 가장 중요한 병합과 정렬 두 가지 역할 중 **정렬은 하지 않고 병합 작업만 하는 I/O 스케줄러이다.**
+
+그림과 같이 큐도 하나만 존재하며, 인입된 I/O 요청에 대해 병합할 수 있는지의 여부만 확인한 후 병합이 가능하면 병합 작업을 진행한다. 별도의 섹터별 정렬 작업은 하지 않는다.
+
+헤더를 움직여야 하는 기계식 디스크가 아닌 플래시 메모리를 기반으로 한 플래시 디스크는 헤더가 없기 때문에 특정 섹터에 도달하는 데 필요한 시간이 모두 동일하다. 반면에 헤더를 움직여야 하는 기계식 디스크는 현재 헤더의 위치가 어디냐에 따라서 섹터별로 접근하는 소요 시간이 달라진다. 이렇게 플래시 디스크는 어느 섹터에 언제 접근하든 소요되는 시간이 같이 때문에 굳이 정렬을 해서 헤더의 움직임을 최소화할 필요가 없다. 오히려 정렬하는 데 시간을 빼앗겨서 성능이 더 안 좋아질 수 있다. 그렇기 때문에 플래시 디스크의 경우는 noop I/O 스케줄러 사용을 권고하고 있다. 이 I/O 스케줄러의 경우는 튜닝 가능한 값도 존재하지 않는다.
+
+# 11.6 cfq와 deadline의 성능 테스트
+
+예를 들어 I/O를 일으키는 프로세스가 하나만 있다면 cfq와 deadline사이에는 큰 차이가 없을 것이다. 하지만 I/O를 일으키는 프로세스가 여러개인 상황에서는 cfq와 deadline은 차이가 있다. cfq는 다수의 프로세스들의 요청을 공평하게 분배해서 처리하는 한편, deadline은 요청이 어떤 프로세스로부터 발생했느냐가 아니라 언제 발생했느냐를 기준으로 처리하기 때문이다. 또한, 임의 접근이 많이 발생하느냐, 순차 접근이 많이 발생하느냐의 워크로드 차이도 성능의 차이를 만들어낼 수 있다.
+
+`fio`는 다양한 옵션을 이용해서 실제 서버와 유사한 워크로드를 만들어낼 수 있다. 먼저 웹 서버의 워크로드를 시뮬레이션해보자. 웹 서버에서 발생하는 가장 많은 I/O 요청은 사용자의 요청에 대한 로그 기록이다. 로그 기록을 로그 파일의 끝에 계속해서 붙여 나가는 방식이기 때문에 순차 접근이 많으며, 프로세스가 로그 파일 디스크립터를 여러 개 열어서 사용하지 않기 때문에 발생하는 I/O 요청 자체도 그리 많지는 않을 것이다. 다음은 웹 서버의 워크로드를 시뮬레이션하기 위해 사용한 파라미터 값이다.
+
+```
+root@ip-172-31-0-63:/home/ubuntu# fio --ioengine=libaio --name=test --runtime=60 --time_based --clocksource=clock_gettime --numjobs=1 --rw=readwrite --bs=4k --size=16g --filename=fio_test.tmp --ioscheduler=cfq -
+-iodepth=1 --direct=1
+test: (g=0): rw=rw, bs=(R) 4096B-4096B, (W) 4096B-4096B, (T) 4096B-4096B, ioengine=libaio, iodepth=1
+fio-3.36
+Starting 1 process
+test: Laying out IO file (1 file / 16384MiB)
+fio: ENOSPC on laying out file, stopping
+fio: pid=0, err=28/file:filesetup.c:240, func=write, error=No space left on device
+
+Run status group 0 (all jobs):
+```
+
+```
+root@ip-172-31-0-63:/home/ubuntu# fio --ioengine=libaio --name=test --runtime=60 --time_based --clocksource=clock_gettime --numjobs=1 --rw=readwrite --bs=4k --size=16m --filename=fio_test.tmp --ioscheduler=cfq -
+-iodepth=1 --direct=1
+test: (g=0): rw=rw, bs=(R) 4096B-4096B, (W) 4096B-4096B, (T) 4096B-4096B, ioengine=libaio, iodepth=1
+fio-3.36
+Starting 1 process
+test: Laying out IO file (1 file / 16MiB)
+fio: unable to set io scheduler to cfq
+fio: pid=2723, err=22/file:backend.c:1467, func=iosched_switch, error=Invalid argument
+
+Run status group 0 (all jobs):
+
+Disk stats (read/write):
+  xvda: ios=0/0, sectors=0/0, merge=0/0, ticks=0/0, in_queue=0, util=0.00%
+```
+
+```
+root@ip-172-31-0-63:/home/ubuntu# fio --ioengine=libaio --name=test --runtime=60 --time_based --clocksource=clock_gettime --numjobs=1 --rw=readwrite --bs=4k --size=16m --filename=fio_test.tmp --ioscheduler=mq-deadline --iodepth=1 --direct=1
+test: (g=0): rw=rw, bs=(R) 4096B-4096B, (W) 4096B-4096B, (T) 4096B-4096B, ioengine=libaio, iodepth=1
+fio-3.36
+Starting 1 process
+Jobs: 1 (f=1): [M(1)][100.0%][r=2836KiB/s,w=2684KiB/s][r=709,w=671 IOPS][eta 00m:00s]
+test: (groupid=0, jobs=1): err= 0: pid=2736: Sat Feb 28 14:14:31 2026
+  read: IOPS=722, BW=2890KiB/s (2959kB/s)(169MiB/60001msec)
+    slat (usec): min=9, max=139, avg=17.14, stdev= 4.92
+    clat (usec): min=341, max=30072, avg=569.22, stdev=248.87
+     lat (usec): min=356, max=30088, avg=586.36, stdev=249.03
+    clat percentiles (usec):
+     |  1.00th=[  383],  5.00th=[  408], 10.00th=[  424], 20.00th=[  465],
+     | 30.00th=[  502], 40.00th=[  529], 50.00th=[  553], 60.00th=[  578],
+     | 70.00th=[  611], 80.00th=[  660], 90.00th=[  701], 95.00th=[  725],
+     | 99.00th=[  807], 99.50th=[ 1029], 99.90th=[ 2409], 99.95th=[ 5145],
+     | 99.99th=[ 8717]
+   bw (  KiB/s): min= 2576, max= 3264, per=100.00%, avg=2892.17, stdev=148.80, samples=119
+   iops        : min=  644, max=  816, avg=723.04, stdev=37.20, samples=119
+  write: IOPS=717, BW=2868KiB/s (2937kB/s)(168MiB/60001msec); 0 zone resets
+    slat (usec): min=12, max=190, avg=18.68, stdev= 5.24
+    clat (usec): min=470, max=30984, avg=778.46, stdev=315.38
+     lat (usec): min=487, max=31000, avg=797.14, stdev=315.53
+    clat percentiles (usec):
+     |  1.00th=[  519],  5.00th=[  545], 10.00th=[  570], 20.00th=[  611],
+     | 30.00th=[  660], 40.00th=[  709], 50.00th=[  766], 60.00th=[  807],
+     | 70.00th=[  857], 80.00th=[  930], 90.00th=[ 1004], 95.00th=[ 1020],
+     | 99.00th=[ 1090], 99.50th=[ 1205], 99.90th=[ 3916], 99.95th=[ 5473],
+     | 99.99th=[ 9241]
+   bw (  KiB/s): min= 2544, max= 3232, per=100.00%, avg=2870.92, stdev=150.45, samples=119
+   iops        : min=  636, max=  808, avg=717.73, stdev=37.61, samples=119
+  lat (usec)   : 500=14.68%, 750=57.43%, 1000=22.53%
+  lat (msec)   : 2=5.21%, 4=0.06%, 10=0.08%, 20=0.01%, 50=0.01%
+  cpu          : usr=1.36%, sys=3.38%, ctx=86391, majf=0, minf=12
+  IO depths    : 1=100.0%, 2=0.0%, 4=0.0%, 8=0.0%, 16=0.0%, 32=0.0%, >=64=0.0%
+     submit    : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     complete  : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     issued rwts: total=43344,43023,0,0 short=0,0,0,0 dropped=0,0,0,0
+     latency   : target=0, window=0, percentile=100.00%, depth=1
+
+Run status group 0 (all jobs):
+   READ: bw=2890KiB/s (2959kB/s), 2890KiB/s-2890KiB/s (2959kB/s-2959kB/s), io=169MiB (178MB), run=60001-60001msec
+  WRITE: bw=2868KiB/s (2937kB/s), 2868KiB/s-2868KiB/s (2937kB/s-2937kB/s), io=168MiB (176MB), run=60001-60001msec
+
+Disk stats (read/write):
+  xvda: ios=43269/43030, sectors=346152/344480, merge=0/19, ticks=24686/33299, in_queue=57984, util=97.88%
+```
+
+![output (1).png](attachment:354df9f0-6873-4ff6-8c58-a35bedb0235c:output_(1).png)
+
+![output.png](attachment:cc5e6048-9edf-45a3-8de5-b6d50bb98ffc:output.png)
+
+프로세스의 개수가 증가함에 따라 I/O 처리 성능도 함께 증가했으며, cfq와 deadline 사이의 성능 차이가 거의 없다. 순차 접근 자체가 헤드의 움직임이 최소화 되어 있고 프로세스들이 발생시키는 I/O 요청 자체도 많지 않기 때문이다. 그래서 웹 서버에서는 I/O 스케줄러가 성능에 큰 영향을 주지는 않는다.
+
+다음으로 파일 서버의 워크로드를 시뮬레이션해보자. 파일 서버에서는 다양한 파일들에 대한 접근이 이루어지기 때문에 순차 접근보다는 임의 접근이 많이 발생한다. 또한, 사용자의 요청이 많을 경우 많은 양의 I/O가 발생할 수 있다. 다음은 파일 서버의 워크로드를 시뮬레이션하기 위해 사용한 파라미터 값이다.
+
+```
+root@ip-172-31-0-63:/home/ubuntu# fio --ioengine=libaio --name=test --runtime=60 --time_based --clocksource=clock_gettime --numjobs=1 --rw=randrw --bs=4k --size=16m --filename=fio_test.tmp --ioscheduler=mq-deadl
+ine --iodepth=64 --direct=1
+test: (g=0): rw=randrw, bs=(R) 4096B-4096B, (W) 4096B-4096B, (T) 4096B-4096B, ioengine=libaio, iodepth=64
+fio-3.36
+Starting 1 process
+Jobs: 1 (f=1): [m(1)][100.0%][r=5953KiB/s,w=6550KiB/s][r=1488,w=1637 IOPS][eta 00m:00s]
+test: (groupid=0, jobs=1): err= 0: pid=2748: Sat Feb 28 14:20:22 2026
+  read: IOPS=1597, BW=6390KiB/s (6544kB/s)(375MiB/60020msec)
+    slat (usec): min=2, max=1652, avg=14.24, stdev=42.64
+    clat (usec): min=553, max=60161, avg=15274.74, stdev=4621.32
+     lat (usec): min=563, max=60168, avg=15288.98, stdev=4622.08
+    clat percentiles (usec):
+     |  1.00th=[ 1254],  5.00th=[11076], 10.00th=[11338], 20.00th=[11994],
+     | 30.00th=[12780], 40.00th=[13566], 50.00th=[14353], 60.00th=[15401],
+     | 70.00th=[16581], 80.00th=[17957], 90.00th=[20579], 95.00th=[23462],
+     | 99.00th=[31327], 99.50th=[34341], 99.90th=[42206], 99.95th=[44827],
+     | 99.99th=[51643]
+   bw (  KiB/s): min= 5768, max=18432, per=100.00%, avg=6397.38, stdev=1129.01, samples=119
+   iops        : min= 1442, max= 4608, avg=1599.34, stdev=282.25, samples=119
+  write: IOPS=1594, BW=6376KiB/s (6529kB/s)(374MiB/60020msec); 0 zone resets
+    slat (usec): min=3, max=20804, avg=15.53, stdev=104.26
+    clat (usec): min=572, max=146555, avg=24803.27, stdev=11700.08
+     lat (usec): min=645, max=146567, avg=24818.79, stdev=11700.10
+    clat percentiles (usec):
+     |  1.00th=[  1745],  5.00th=[ 11731], 10.00th=[ 13042], 20.00th=[ 15401],
+     | 30.00th=[ 17957], 40.00th=[ 20579], 50.00th=[ 23462], 60.00th=[ 26084],
+     | 70.00th=[ 28967], 80.00th=[ 32375], 90.00th=[ 36963], 95.00th=[ 41681],
+     | 99.00th=[ 69731], 99.50th=[ 81265], 99.90th=[105382], 99.95th=[112722],
+     | 99.99th=[129500]
+   bw (  KiB/s): min= 5688, max=19144, per=100.00%, avg=6380.37, stdev=1194.80, samples=119
+   iops        : min= 1422, max= 4786, avg=1595.09, stdev=298.70, samples=119
+  lat (usec)   : 750=0.03%, 1000=0.28%
+  lat (msec)   : 2=1.16%, 4=0.32%, 10=0.13%, 20=61.20%, 50=35.48%
+  lat (msec)   : 100=1.33%, 250=0.07%
+  cpu          : usr=1.70%, sys=4.32%, ctx=182707, majf=0, minf=11
+  IO depths    : 1=0.1%, 2=0.1%, 4=0.1%, 8=0.1%, 16=0.1%, 32=0.1%, >=64=100.0%
+     submit    : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     complete  : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.1%, >=64=0.0%
+     issued rwts: total=95885,95676,0,0 short=0,0,0,0 dropped=0,0,0,0
+     latency   : target=0, window=0, percentile=100.00%, depth=64
+
+Run status group 0 (all jobs):
+   READ: bw=6390KiB/s (6544kB/s), 6390KiB/s-6390KiB/s (6544kB/s-6544kB/s), io=375MiB (393MB), run=60020-60020msec
+  WRITE: bw=6376KiB/s (6529kB/s), 6376KiB/s-6376KiB/s (6529kB/s-6529kB/s), io=374MiB (392MB), run=60020-60020msec
+
+Disk stats (read/write):
+  xvda: ios=94096/92236, sectors=765432/764456, merge=1585/3312, ticks=1435614/2297410, in_queue=3733024, util=95.54%
+```
+
+순차 접근과는 사뭇 다른 결과를 볼 수 있다. 프로세스의 개수가 하나일 때는 둘 다 비슷하지만 프로세스의 개수가 많아질수록 두 I/O 스케줄러의 성능 차이는 벌어지기 시작한다.
+
+**cfq I/O 스케줄러는 프로세스 A에 할당된 큐를 모두 처리한 후 프로세스 B에 할당된 큐를 처리해야 한다.** 그래서 A의 I/O 요청 순서대로 10. 50, 100번 블록을 처리한 후 B의 I/O 요청 순서인 30, 60, 80번 블록을 처리한다. 그림을 보면 각각의 큐에서는 정렬된 상태였지만 전체적으로 봤을 때는 정렬되지 않고 헤드가 움직인다. 하지만 **deadline I/O 스케줄러는 A에서 발생한 I/O 요청과 B에서 발생한 I/O 요청을 함께 정렬해서 전달한다.** 그래서 전체적으로 블록 순으로 정렬이 가능해지고 cfq에 비해 헤드의 움직임이 더 적어진다.
+
+이렇게만 이야기하면 cfq가 deadline보다 좋지 않은 스케줄러처럼 보일 수도 있지만 그렇지 않다. 자신의 타임 슬라이스가 다 소비되면 다른 큐로 넘어간다는 이야기는 바꿔 말하면 I/O 스케줄러가 하나의 I/O 요청을 전적으로 처리해 주는 시간이 반드시 있다는 것을 의미한다. 그래서 **다수의 프로세스가 동등하게 I/O 요청을 일으키는 경우라면 cfq I/O 스케줄러가 조금 더 좋은 성능을 보여줄 수 있다.** 여기서의 좋은 성능이란 더 빠른 응답속도보다는 모든 프로세스가 비슷한 수준으로 I/O 요청을 처리하는 것을 의미한다. 주로 동영상 스트리밍이나 인코딩을 처리하는 서버에 유리한 환경이다. 다수의 프로세스가 다수의 사용자로부터 받은 스트리밍 혹은 인코딩 요청을 처리하게 되는데 그 프로세스들이 균등하게 I/O 요청을 처리할 수 있다면 특정 사용자의 요청이 빨리 처리되거나 하는 불균등 현상을 줄일 수 있다.
+
+반대로 **DB 서버와 같이 특정 프로세스가 많은 양의 I/O 요청을 일으키는 경우에는 deadline I/O 스케줄러가 더 효율적이다.** 타임 슬라이스에 따라서 특정 프로세스의 I/O 요청이 처리되지 않는 idle 타임이 존재하지 않고 I/O 요청의 발생 시간을 기준으로 처리되기 때문이다.
